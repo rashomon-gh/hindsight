@@ -9,12 +9,18 @@ This project implements the agentic memory management architecture proposed in t
 ## Requirements
 
 - Rust 1.85+
-- PostgreSQL with [pgvector](https://github.com/pgvector/pgvector) extension
+- Docker (for PostgreSQL)
 - OpenAI-compatible LLM endpoint (e.g., LM Studio, Ollama, vLLM)
 
-## Configuration
+## Run
 
-Set environment variables (defaults shown):
+1. Start PostgreSQL with pgvector:
+
+```bash
+docker compose up -d
+```
+
+2. Set environment variables (defaults shown — only override if needed):
 
 ```bash
 export DATABASE_URL="postgres://hindsight:hindsight@localhost:5432/hindsight"
@@ -25,7 +31,7 @@ export EMBED_MODEL="nomic-ai/nomic-embed-text-v1.5-GGUF"
 export EMBEDDING_DIM=768
 ```
 
-## Run
+3. Build and run:
 
 ```bash
 cargo run
