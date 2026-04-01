@@ -1,5 +1,8 @@
 # Hindsight
 
+[![Build](https://github.com/rashomon-gh/hindsight/actions/workflows/build.yml/badge.svg)](https://github.com/rashomon-gh/hindsight/actions/workflows/build.yml)
+
+
 An unofficial implementation of 
 [Hindsight is 20/20: Building Agent Memory that Retains, Recalls, and Reflects](http://arxiv.org/abs/2512.12818) 
 in Rust.
