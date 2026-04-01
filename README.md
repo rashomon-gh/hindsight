@@ -1,6 +1,10 @@
 # Hindsight
 
-Agentic memory architecture for AI agents — retain, recall, and reflect on long-term interactions.
+An unofficial implementation of 
+[Hindsight is 20/20: Building Agent Memory that Retains, Recalls, and Reflects](http://arxiv.org/abs/2512.12818) 
+in Rust.
+This project implements the agentic memory management architecture proposed in the paper.
+
 
 ## Requirements
 
