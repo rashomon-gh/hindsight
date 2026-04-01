@@ -170,9 +170,7 @@ If no facts can be extracted, return: {"facts": []}"#;
                 for opinion in &related {
                     if let Some(current_conf) = opinion.confidence {
                         let new_conf = (current_conf + 0.05).min(1.0);
-                        self.storage
-                            .update_confidence(opinion.id, new_conf)
-                            .await?;
+                        self.storage.update_confidence(opinion.id, new_conf).await?;
                         tracing::info!(
                             "Reinforced opinion {} confidence: {:.2} -> {:.2}",
                             opinion.id,
