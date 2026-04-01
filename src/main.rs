@@ -1,3 +1,18 @@
+//! Hindsight — agentic memory architecture for AI agents.
+//!
+//! This binary runs an interactive REPL that accepts user messages, stores
+//! extracted facts into a structured memory bank, recalls relevant context,
+//! and generates preference-conditioned responses.
+//!
+//! See the module-level docs for each subsystem:
+//!
+//! - [`config`] — YAML-based configuration
+//! - [`models`] — data structures (networks, edges, profile)
+//! - [`llm`] — OpenAI-compatible HTTP client
+//! - [`storage`] — PostgreSQL + pgvector persistence
+//! - [`tempr`] — Retain & Recall pipeline
+//! - [`cara`] — Reflect pipeline
+
 mod cara;
 mod config;
 mod llm;

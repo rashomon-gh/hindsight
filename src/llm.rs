@@ -1,3 +1,8 @@
+//! OpenAI-compatible LLM client for chat completions and text embeddings.
+//!
+//! Communicates with any server that implements the `/v1/chat/completions`
+//! and `/v1/embeddings` endpoints (e.g. LM Studio, Ollama, vLLM).
+
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
@@ -6,9 +11,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::LLMConfig;
 
+/// A single message in a chat conversation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
+    /// Role: `"system"`, `"user"`, or `"assistant"`.
     pub role: String,
+    /// The text content of the message.
     pub content: String,
 }
 
@@ -53,6 +61,7 @@ struct EmbedData {
     embedding: Vec<f32>,
 }
 
+/// HTTP client for an OpenAI-compatible LLM API.
 pub struct LLMClient {
     client: Client,
     base_url: String,
@@ -62,6 +71,7 @@ pub struct LLMClient {
 }
 
 impl LLMClient {
+    /// Creates a new client from the given [`LLMConfig`].
     pub fn new(config: &LLMConfig) -> Self {
         let client = Client::builder()
             .timeout(Duration::from_secs(180))
@@ -77,6 +87,15 @@ impl LLMClient {
         }
     }
 
+    /// Sends a chat-completion request and returns the assistant's reply.
+    ///
+    /// The `temperature` and `max_tokens` parameters are forwarded to the API
+    /// when provided.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the HTTP request fails, the server returns a
+    /// non-success status, or the response contains no choices.
     pub async fn chat_completion(
         &self,
         messages: Vec<ChatMessage>,
@@ -115,6 +134,14 @@ impl LLMClient {
             .ok_or_else(|| anyhow!("No response choices from LLM"))
     }
 
+    /// Generates embeddings for a batch of texts.
+    ///
+    /// Returns one `Vec<f32>` per input string, in the same order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the HTTP request fails or the server returns a
+    /// non-success status.
     pub async fn embed(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
         let request = EmbedRequest {
             model: self.embed_model.clone(),
@@ -145,6 +172,7 @@ impl LLMClient {
             .collect())
     }
 
+    /// Convenience wrapper around [`embed`](Self::embed) for a single text.
     pub async fn embed_single(&self, text: String) -> Result<Vec<f32>> {
         let embeddings = self.embed(vec![text]).await?;
         embeddings

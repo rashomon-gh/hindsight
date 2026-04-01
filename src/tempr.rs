@@ -1,3 +1,18 @@
+//! TEMPR pipeline — **Retain** and **Recall** operations.
+//!
+//! # Retain
+//!
+//! Parses a conversation through the LLM to extract self-contained facts,
+//! classifies each into one of the four memory networks, generates embeddings,
+//! stores them in PostgreSQL, creates graph edges between related facts, and
+//! reinforces existing opinions that share entities with new facts.
+//!
+//! # Recall
+//!
+//! Executes four retrieval strategies in parallel (semantic, keyword, temporal,
+//! graph), then merges results with **Reciprocal Rank Fusion** and trims to a
+//! token budget.
+
 use std::collections::{HashMap, HashSet};
 
 use anyhow::{Result, anyhow};
@@ -8,11 +23,19 @@ use crate::llm::{ChatMessage, LLMClient};
 use crate::models::*;
 use crate::storage::Storage;
 
+/// RRF constant `k` used in the fusion formula `1 / (k + rank + 1)`.
 const RRF_K: u64 = 60;
+/// Maximum number of hops during spreading-activation graph traversal.
 const GRAPH_MAX_HOPS: usize = 3;
+/// Activation decay factor per hop (0.0–1.0).
 const GRAPH_DECAY: f64 = 0.7;
+/// Maximum results returned by each individual search strategy.
 const SEARCH_LIMIT: usize = 20;
 
+/// The TEMPR (Temporal-Entity Memory Processing & Retrieval) pipeline.
+///
+/// Owns the [`LLMClient`] and [`Storage`] and exposes the two primary
+/// operations: [`retain`](Self::retain) and [`recall`](Self::recall).
 pub struct TemprPipeline {
     llm: LLMClient,
     storage: Storage,
@@ -20,6 +43,8 @@ pub struct TemprPipeline {
 }
 
 impl TemprPipeline {
+    /// Creates a new pipeline from the given LLM client, storage handle, and
+    /// embedding dimensionality.
     pub fn new(llm: LLMClient, storage: Storage, embedding_dim: usize) -> Self {
         Self {
             llm,
@@ -28,14 +53,23 @@ impl TemprPipeline {
         }
     }
 
+    /// Returns a reference to the inner [`LLMClient`].
     pub fn llm(&self) -> &LLMClient {
         &self.llm
     }
 
+    /// Returns a reference to the inner [`Storage`].
     pub fn storage(&self) -> &Storage {
         &self.storage
     }
 
+    /// Extracts, classifies, embeds, and stores facts from a conversation.
+    ///
+    /// After storing all facts and their inter-links, any existing opinion
+    /// memories that share entities with the new facts have their confidence
+    /// bumped by 0.05 (capped at 1.0).
+    ///
+    /// Returns the list of newly created [`MemoryUnit`]s.
     pub async fn retain(&self, conversation: &str) -> Result<Vec<MemoryUnit>> {
         let system_prompt = r#"You are a memory extraction system. Analyze the conversation and extract structured facts.
 
@@ -136,7 +170,9 @@ If no facts can be extracted, return: {"facts": []}"#;
                 for opinion in &related {
                     if let Some(current_conf) = opinion.confidence {
                         let new_conf = (current_conf + 0.05).min(1.0);
-                        self.storage.update_confidence(opinion.id, new_conf).await?;
+                        self.storage
+                            .update_confidence(opinion.id, new_conf)
+                            .await?;
                         tracing::info!(
                             "Reinforced opinion {} confidence: {:.2} -> {:.2}",
                             opinion.id,
@@ -151,6 +187,12 @@ If no facts can be extracted, return: {"facts": []}"#;
         Ok(stored)
     }
 
+    /// Retrieves memories relevant to a query within a token budget.
+    ///
+    /// Runs semantic, keyword, and temporal searches in parallel, then
+    /// performs spreading activation from the top results. All four ranked
+    /// lists are fused with RRF, deduplicated, and trimmed to fit
+    /// `token_budget` (estimated at ~4 characters per token).
     pub async fn recall(&self, query: &str, token_budget: usize) -> Result<Vec<ScoredMemory>> {
         let query_embedding = self.llm.embed_single(query.to_string()).await?;
 
@@ -205,6 +247,11 @@ If no facts can be extracted, return: {"facts": []}"#;
         Ok(results)
     }
 
+    /// Spreading-activation graph traversal starting from `seed_ids`.
+    ///
+    /// Traverses up to [`GRAPH_MAX_HOPS`] hops, decaying activation by
+    /// [`GRAPH_DECAY`] and the edge weight at each step. Nodes receiving
+    /// activation below 0.1 are pruned.
     async fn spreading_activation(&self, seed_ids: &[Uuid]) -> Vec<(Uuid, f64)> {
         let mut activated: HashMap<Uuid, f64> = HashMap::new();
         let mut frontier: Vec<(Uuid, f64)> = seed_ids.iter().map(|id| (*id, 1.0)).collect();
@@ -241,6 +288,11 @@ If no facts can be extracted, return: {"facts": []}"#;
     }
 }
 
+/// Merges multiple ranked lists using the **Reciprocal Rank Fusion** formula:
+///
+/// `score(d) = Σ 1 / (k + rank_i + 1)`
+///
+/// where `k` is a smoothing constant (typically 60).
 fn reciprocal_rank_fusion(rankings: &[Vec<(Uuid, f64)>], k: u64) -> Vec<(Uuid, f64)> {
     let mut scores: HashMap<Uuid, f64> = HashMap::new();
     for ranking in rankings {
@@ -253,6 +305,8 @@ fn reciprocal_rank_fusion(rankings: &[Vec<(Uuid, f64)>], k: u64) -> Vec<(Uuid, f
     results
 }
 
+/// Returns a default edge weight depending on the semantic meaning of the
+/// edge type. Causal edges are strongest; semantic edges are weakest.
 fn default_edge_weight(edge_type: &EdgeType) -> f32 {
     match edge_type {
         EdgeType::Temporal => 0.8,
@@ -262,6 +316,8 @@ fn default_edge_weight(edge_type: &EdgeType) -> f32 {
     }
 }
 
+/// Best-effort extraction of a JSON object from an LLM response that may be
+/// wrapped in Markdown code fences.
 fn extract_json(text: &str) -> &str {
     if let Some(start) = text.find("```json") {
         let start = start + 7;
@@ -283,6 +339,7 @@ fn extract_json(text: &str) -> &str {
     text
 }
 
+/// Rough token estimator: ~4 characters per token.
 fn estimate_tokens(text: &str) -> usize {
     (text.len() as f64 / 4.0).ceil() as usize
 }

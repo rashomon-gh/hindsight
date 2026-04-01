@@ -1,3 +1,9 @@
+//! PostgreSQL storage layer backed by pgvector and full-text search.
+//!
+//! Provides CRUD operations for memory units and graph edges, plus four
+//! retrieval strategies: semantic (HNSW cosine), keyword (GIN/BM25),
+//! temporal (recency decay), and graph traversal (spreading activation).
+
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, Utc};
 use sqlx::{PgPool, Row};
@@ -5,16 +11,25 @@ use uuid::Uuid;
 
 use crate::models::*;
 
+/// Database storage handle backed by a PostgreSQL connection pool.
 pub struct Storage {
     pool: PgPool,
 }
 
 impl Storage {
+    /// Connects to PostgreSQL and returns a new [`Storage`] instance.
+    ///
+    /// Does **not** run migrations — call [`init_schema`](Self::init_schema)
+    /// afterwards.
     pub async fn connect(database_url: &str) -> Result<Self> {
         let pool = PgPool::connect(database_url).await?;
         Ok(Self { pool })
     }
 
+    /// Creates the `memories` and `edges` tables, installs the `vector`
+    /// and `pg_trgm` extensions, and builds the HNSW and GIN indexes.
+    ///
+    /// Safe to call multiple times (uses `IF NOT EXISTS`).
     pub async fn init_schema(&self) -> Result<()> {
         let schema = r#"
             CREATE EXTENSION IF NOT EXISTS vector;
@@ -63,6 +78,7 @@ impl Storage {
         Ok(())
     }
 
+    /// Inserts a new memory unit with its embedding and entity list.
     pub async fn store_memory(
         &self,
         id: Uuid,
@@ -91,6 +107,7 @@ impl Storage {
         Ok(())
     }
 
+    /// Inserts a directed edge between two memory units.
     pub async fn store_edge(
         &self,
         source_id: Uuid,
@@ -113,6 +130,9 @@ impl Storage {
         Ok(())
     }
 
+    /// Semantic search using cosine distance over HNSW-indexed embeddings.
+    ///
+    /// Returns up to `limit` results scored by `1 - cosine_distance`.
     pub async fn search_semantic(
         &self,
         query_embedding: &[f32],
@@ -144,6 +164,9 @@ impl Storage {
         Ok(results)
     }
 
+    /// Full-text keyword search using PostgreSQL `ts_rank` (BM25-like).
+    ///
+    /// Words shorter than 3 characters are ignored.
     pub async fn search_keyword(&self, query: &str, limit: usize) -> Result<Vec<ScoredMemory>> {
         let tsquery: String = query
             .split_whitespace()
@@ -181,6 +204,8 @@ impl Storage {
         Ok(results)
     }
 
+    /// Temporal search ordered by recency, scored with an exponential decay
+    /// (half-life ≈ 1 day).
     pub async fn search_temporal(&self, limit: usize) -> Result<Vec<ScoredMemory>> {
         let rows = sqlx::query(
             r#"SELECT id, network_type, content, embedding::text AS embedding_text,
@@ -205,6 +230,8 @@ impl Storage {
         Ok(results)
     }
 
+    /// Returns the outgoing neighbors (target ID + edge weight) of a memory
+    /// unit for graph traversal.
     pub async fn get_neighbors(&self, memory_id: Uuid) -> Result<Vec<(Uuid, f32)>> {
         let rows = sqlx::query("SELECT target_id, weight FROM edges WHERE source_id = $1")
             .bind(memory_id)
@@ -220,6 +247,7 @@ impl Storage {
         Ok(results)
     }
 
+    /// Fetches a single memory unit by ID.
     pub async fn get_memory(&self, id: Uuid) -> Result<Option<MemoryUnit>> {
         let row = sqlx::query(
             "SELECT id, network_type, content, embedding::text AS embedding_text, entities, confidence, created_at, updated_at FROM memories WHERE id = $1",
@@ -234,6 +262,9 @@ impl Storage {
         }
     }
 
+    /// Updates the confidence score of an opinion memory.
+    ///
+    /// Only affects rows where `network_type = 'opinion'`.
     pub async fn update_confidence(&self, id: Uuid, new_confidence: f32) -> Result<()> {
         sqlx::query(
             "UPDATE memories SET confidence = $1, updated_at = NOW() WHERE id = $2 AND network_type = 'opinion'",
@@ -245,6 +276,8 @@ impl Storage {
         Ok(())
     }
 
+    /// Finds all opinion memories that share at least one entity with the
+    /// given list. Used for opinion reinforcement during retention.
     pub async fn find_opinions_by_entities(&self, entities: &[String]) -> Result<Vec<MemoryUnit>> {
         if entities.is_empty() {
             return Ok(Vec::new());
@@ -272,11 +305,13 @@ impl Storage {
     }
 }
 
+/// Formats a `Vec<f32>` as a PostgreSQL vector literal, e.g. `[0.1,0.2,0.3]`.
 fn format_vector(v: &[f32]) -> String {
     let inner: Vec<String> = v.iter().map(|f| f.to_string()).collect();
     format!("[{}]", inner.join(","))
 }
 
+/// Parses a PostgreSQL vector literal back into a `Vec<f32>`.
 fn parse_vector(s: &str) -> Result<Vec<f32>> {
     let s = s.trim().trim_start_matches('[').trim_end_matches(']');
     if s.is_empty() {
@@ -291,6 +326,7 @@ fn parse_vector(s: &str) -> Result<Vec<f32>> {
         .collect()
 }
 
+/// Deserializes a `sqlx::postgres::PgRow` into a [`MemoryUnit`].
 fn row_to_memory(row: &sqlx::postgres::PgRow) -> Result<MemoryUnit> {
     let id: Uuid = row.get("id");
     let network_type_str: String = row.get("network_type");

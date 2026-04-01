@@ -1,3 +1,10 @@
+//! CARA pipeline — **Reflect** operation.
+//!
+//! Combines the TEMPR recall results with an [`AgentProfile`] to generate a
+//! preference-conditioned LLM response. Any new opinions embedded in the
+//! response as `<opinion confidence="…">…</opinion>` tags are extracted and
+//! automatically stored in the Opinion network.
+
 use anyhow::Result;
 use uuid::Uuid;
 
@@ -5,20 +12,32 @@ use crate::llm::ChatMessage;
 use crate::models::*;
 use crate::tempr::TemprPipeline;
 
+/// The CARA (Context-Aware Reflective Agent) pipeline.
+///
+/// Wraps a [`TemprPipeline`] and an [`AgentProfile`] to provide the
+/// high-level [`retain`](Self::retain) and [`reflect`](Self::reflect) cycle.
 pub struct CaraPipeline {
     profile: AgentProfile,
     tempr: TemprPipeline,
 }
 
 impl CaraPipeline {
+    /// Creates a new CARA pipeline with the given profile and TEMPR backend.
     pub fn new(profile: AgentProfile, tempr: TemprPipeline) -> Self {
         Self { profile, tempr }
     }
 
+    /// Delegates to [`TemprPipeline::retain`].
     pub async fn retain(&self, conversation: &str) -> Result<Vec<MemoryUnit>> {
         self.tempr.retain(conversation).await
     }
 
+    /// Recalls relevant memories, formats a system prompt with the agent's
+    /// disposition profile, queries the LLM, then extracts and persists any
+    /// new opinions found in the response.
+    ///
+    /// `token_budget` controls how many tokens of recalled context are
+    /// injected into the prompt.
     pub async fn reflect(&self, user_message: &str, token_budget: usize) -> Result<String> {
         let recalled = self.tempr.recall(user_message, token_budget).await?;
 
@@ -121,6 +140,10 @@ You may include multiple opinion tags. Do not mention the XML tags in your visib
     }
 }
 
+/// Extracts `<opinion confidence="…">…</opinion>` tags from an LLM response.
+///
+/// Returns the response text with all tags removed and a list of
+/// `(text, confidence)` tuples.
 fn extract_opinions(text: &str) -> (String, Vec<(String, f32)>) {
     let mut opinions = Vec::new();
     let mut clean = text.to_string();
@@ -155,6 +178,7 @@ fn extract_opinions(text: &str) -> (String, Vec<(String, f32)>) {
     (clean.trim().to_string(), opinions)
 }
 
+/// Parses the `confidence="…"` attribute value from an opening `<opinion>` tag.
 fn extract_confidence(tag: &str) -> Option<f32> {
     let attr = "confidence=\"";
     let start = tag.find(attr)?;
