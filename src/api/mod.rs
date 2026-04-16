@@ -9,6 +9,7 @@ pub mod routes;
 use anyhow::Result;
 use std::sync::Arc;
 use tokio::net::TcpListener;
+use tokio::sync::broadcast;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::compression::CompressionLayer;
 use tower_http::trace::TraceLayer;
@@ -89,11 +90,37 @@ impl WebServer {
         info!("🌐 Web server starting at http://{}", addr);
         info!("📊 Dashboard available at http://{}/", addr);
         info!("🔌 API endpoints available at http://{}/api/", addr);
+        info!("Press Ctrl+C to stop the server");
+
+        // Create a shutdown signal channel
+        let (shutdown_tx, _) = broadcast::channel::<()>(1);
+
+        // Spawn a task to handle Ctrl+C immediately
+        let shutdown_tx_clone = shutdown_tx.clone();
+        tokio::spawn(async move {
+            match tokio::signal::ctrl_c().await {
+                Ok(()) => {
+                    info!("Received Ctrl+C, initiating immediate shutdown...");
+                }
+                Err(err) => {
+                    tracing::error!("Failed to install Ctrl+C handler: {}", err);
+                }
+            }
+            let _ = shutdown_tx_clone.send(());
+        });
+
+        // Create a graceful shutdown future that listens for our channel
+        let graceful_shutdown = async move {
+            let mut shutdown_rx = shutdown_tx.subscribe();
+            shutdown_rx.recv().await;
+            info!("Shutdown signal received");
+        };
 
         axum::serve(listener, app)
-            .with_graceful_shutdown(shutdown_signal())
+            .with_graceful_shutdown(graceful_shutdown)
             .await?;
 
+        info!("Web server shut down successfully");
         Ok(())
     }
 }
