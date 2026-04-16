@@ -7,13 +7,14 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     response::Json,
-    routing::get,
+    routing::{get, post},
     Router,
 };
 use serde::Deserialize;
 use std::sync::Arc;
 use uuid::Uuid;
 
+use crate::cara::CaraPipeline;
 use crate::storage::Storage;
 use crate::models::NetworkType;
 use crate::api::models::*;
@@ -40,6 +41,7 @@ pub struct GraphQuery {
 #[derive(Clone)]
 pub struct ApiState {
     pub storage: Arc<Storage>,
+    pub cara: Arc<CaraPipeline>,
 }
 
 /// Create the API router with all endpoints.
@@ -51,6 +53,7 @@ pub fn create_api_router() -> Router<ApiState> {
         .route("/api/entities", get(list_entities))
         .route("/api/stats", get(get_stats))
         .route("/api/networks/:network_type", get(get_by_network))
+        .route("/api/chat", post(chat))
 }
 
 /// GET /api/memories - List and search memories with pagination.
@@ -296,4 +299,44 @@ pub async fn get_by_network(
         .collect();
 
     Ok(Json(api_memories))
+}
+
+/// POST /api/chat - Send a message and get a response with new memories.
+pub async fn chat(
+    State(state): State<ApiState>,
+    Json(req): Json<ChatRequest>,
+) -> Result<Json<ChatResponse>, StatusCode> {
+    if req.message.trim().is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let memories = state
+        .cara
+        .retain(&req.message)
+        .await
+        .map_err(|e| {
+            tracing::error!("Retain error: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let response = state.cara.reflect(&req.message, 2000).await.map_err(|e| {
+        tracing::error!("Reflect error: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let new_memories: Vec<ChatMemory> = memories
+        .into_iter()
+        .map(|m| ChatMemory {
+            id: m.id,
+            network: m.network.as_str().to_string(),
+            content: m.content,
+            entities: m.entities,
+            confidence: m.confidence,
+        })
+        .collect();
+
+    Ok(Json(ChatResponse {
+        response,
+        new_memories,
+    }))
 }

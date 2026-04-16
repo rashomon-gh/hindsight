@@ -15,6 +15,7 @@ use tower_http::trace::TraceLayer;
 use tower_http::services::ServeDir;
 use tracing::info;
 
+use crate::cara::CaraPipeline;
 use crate::storage::Storage;
 use crate::api::routes::{ApiState, create_api_router};
 
@@ -40,12 +41,12 @@ impl Default for WebConfig {
 pub struct WebServer {
     config: WebConfig,
     storage: Arc<Storage>,
+    cara: Arc<CaraPipeline>,
 }
 
 impl WebServer {
-    /// Create a new web server instance.
-    pub fn new(config: WebConfig, storage: Arc<Storage>) -> Self {
-        Self { config, storage }
+    pub fn new(config: WebConfig, storage: Arc<Storage>, cara: Arc<CaraPipeline>) -> Self {
+        Self { config, storage, cara }
     }
 
     pub async fn run(&self) -> Result<()> {
@@ -56,6 +57,7 @@ impl WebServer {
 
         let state = ApiState {
             storage: self.storage.clone(),
+            cara: self.cara.clone(),
         };
 
         let app = create_api_router()

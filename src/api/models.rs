@@ -3,9 +3,9 @@
 //! These models are designed for JSON serialization and represent the
 //! public API contract for the web visualization interface.
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use chrono::{DateTime, Utc};
 
 /// Memory unit response for API consumption.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,4 +120,28 @@ pub struct NeighborMemory {
 pub struct EntityList {
     pub entities: Vec<String>,
     pub total: usize,
+}
+
+/// Chat request from the web UI.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatRequest {
+    pub message: String,
+}
+
+/// Chat response returned to the web UI.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatResponse {
+    pub response: String,
+    pub new_memories: Vec<ChatMemory>,
+}
+
+/// A memory created during a chat interaction, for display in the UI.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatMemory {
+    pub id: Uuid,
+    pub network: String,
+    pub content: String,
+    pub entities: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f32>,
 }

@@ -70,7 +70,7 @@ async fn main() -> Result<()> {
         bias_strength: 0.5,
     };
 
-    let cara = CaraPipeline::new(profile, tempr);
+    let cara = Arc::new(CaraPipeline::new(profile, tempr));
 
     if web_mode || config.web.enabled {
         let web_host = config.web.host.clone();
@@ -82,7 +82,7 @@ async fn main() -> Result<()> {
             enabled: true,
         };
 
-        let web_server = WebServer::new(web_config, storage.clone());
+        let web_server = WebServer::new(web_config, storage.clone(), cara.clone());
 
         if cli_mode {
             println!("🌐 Starting web server at http://{}:{}...", web_host, web_port);
@@ -108,7 +108,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn run_cli_repl(cara: CaraPipeline) -> Result<()> {
+async fn run_cli_repl(cara: Arc<CaraPipeline>) -> Result<()> {
     let stdin = tokio::io::BufReader::new(tokio::io::stdin());
     let mut lines = stdin.lines();
 

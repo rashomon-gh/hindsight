@@ -38,6 +38,11 @@ function hindsightApp() {
         // Chart instances
         charts: {},
 
+        // Chat
+        chatMessages: [],
+        chatInput: '',
+        chatLoading: false,
+
         async init() {
             await this.loadStats();
             await this.loadGraphData();
@@ -201,6 +206,47 @@ function hindsightApp() {
                 this.activeTab = 'inspector';
             } catch (error) {
                 console.error('Failed to load memory details:', error);
+            }
+        },
+
+        async sendChat() {
+            const message = this.chatInput.trim();
+            if (!message || this.chatLoading) return;
+
+            this.chatMessages.push({ role: 'user', text: message, memories: [] });
+            this.chatInput = '';
+            this.chatLoading = true;
+
+            try {
+                const response = await fetch(`${API_BASE}/chat`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message })
+                });
+
+                if (!response.ok) throw new Error('Chat request failed');
+
+                const data = await response.json();
+                this.chatMessages.push({
+                    role: 'assistant',
+                    text: data.response,
+                    memories: data.new_memories || []
+                });
+
+                await this.loadStats();
+            } catch (error) {
+                console.error('Chat error:', error);
+                this.chatMessages.push({
+                    role: 'assistant',
+                    text: 'Sorry, something went wrong. Please try again.',
+                    memories: []
+                });
+            } finally {
+                this.chatLoading = false;
+                this.$nextTick(() => {
+                    const el = document.getElementById('chatMessages');
+                    if (el) el.scrollTop = el.scrollHeight;
+                });
             }
         },
 
