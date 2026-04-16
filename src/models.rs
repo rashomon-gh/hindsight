@@ -79,6 +79,7 @@ impl EdgeType {
     }
 
     /// Parses an edge-type tag string. Returns `None` for unknown values.
+    #[allow(dead_code)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "temporal" => Some(Self::Temporal),
@@ -113,6 +114,7 @@ pub struct MemoryUnit {
 
 /// A directed edge between two memory units in the knowledge graph.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct Edge {
     /// Unique identifier.
     pub id: Uuid,
