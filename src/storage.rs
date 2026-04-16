@@ -595,6 +595,52 @@ impl Storage {
         Ok(files)
     }
 
+    /// Delete file metadata by ID.
+    pub async fn delete_file(&self, file_id: &str) -> Result<()> {
+        let file_uuid = Uuid::parse_str(file_id)?;
+        sqlx::query("DELETE FROM files WHERE id = $1")
+            .bind(file_uuid)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Get file metadata by ID.
+    pub async fn get_file_by_id(&self, file_id: &str) -> Result<Option<crate::files::FileMetadata>> {
+        let file_uuid = Uuid::parse_str(file_id)?;
+        let row = sqlx::query(
+            "SELECT id, filename, path, file_type, size_bytes, hash, processed_at, content_length, chunk_count
+             FROM files WHERE id = $1"
+        )
+        .bind(file_uuid)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => {
+                let file_type = match row.get::<String, _>("file_type").as_str() {
+                    "pdf" => crate::files::FileType::PDF,
+                    "markdown" => crate::files::FileType::Markdown,
+                    "text" => crate::files::FileType::Text,
+                    _ => crate::files::FileType::Unknown,
+                };
+
+                Ok(Some(crate::files::FileMetadata {
+                    id: row.get::<Uuid, _>("id").to_string(),
+                    filename: row.get("filename"),
+                    path: row.get::<String, _>("path").into(),
+                    file_type,
+                    size_bytes: row.get("size_bytes"),
+                    hash: row.get("hash"),
+                    processed_at: row.get("processed_at"),
+                    content_length: row.get("content_length"),
+                    chunk_count: row.get("chunk_count"),
+                }))
+            }
+            None => Ok(None),
+        }
+    }
+
     /// Updates the confidence score of an opinion memory.
     ///
     /// Only affects rows where `network_type = 'opinion'`.

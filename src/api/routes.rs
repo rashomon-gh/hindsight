@@ -7,7 +7,7 @@ use axum::{
     extract::{Path, Query, State, Multipart},
     http::StatusCode,
     response::Json,
-    routing::{get, post},
+    routing::{get, post, delete},
     Router,
 };
 use serde::{Deserialize, Serialize};
@@ -58,6 +58,8 @@ pub fn create_api_router() -> Router<ApiState> {
         .route("/api/files/upload", post(upload_file))
         .route("/api/files", get(list_files))
         .route("/api/files/:id", get(get_file))
+        .route("/api/files/:id", delete(delete_file))
+        .route("/api/files/:id/reprocess", post(reprocess_file))
 }
 
 /// GET /api/memories - List and search memories with pagination.
@@ -463,4 +465,75 @@ pub struct FileMetadataResponse {
     pub processed_at: chrono::DateTime<chrono::Utc>,
     pub content_length: i32,
     pub chunk_count: i32,
+}
+
+/// DELETE /api/files/:id - Delete a file record.
+pub async fn delete_file(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    // First check if the file exists
+    let file = state.storage
+        .get_file_by_id(&id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    // Delete the file record
+    state.storage
+        .delete_file(&id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // Try to delete the actual file if it exists
+    let _ = tokio::fs::remove_file(&file.path).await;
+
+    Ok(Json(json!({
+        "status": "success",
+        "message": "File deleted successfully",
+        "file_id": id
+    })))
+}
+
+/// POST /api/files/:id/reprocess - Reprocess a file to extract memories again.
+pub async fn reprocess_file(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    // Get the file metadata
+    let file = state.storage
+        .get_file_by_id(&id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    // Check if the file still exists on disk
+    if !file.path.exists() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    // Process the file again
+    let processor = FileProcessor::new(state.storage.clone(), state.llm.clone(), state.embedding_dim);
+
+    match processor.process_file(file.path.clone()).await {
+        Ok(result) => {
+            Ok(Json(json!({
+                "status": "success",
+                "file_id": result.file_metadata.id,
+                "filename": result.file_metadata.filename,
+                "memories_created": result.total_memories_created,
+                "processing_time_ms": result.processing_time_ms,
+                "file_type": match result.file_metadata.file_type {
+                    FileType::PDF => "pdf",
+                    FileType::Markdown => "markdown",
+                    FileType::Text => "text",
+                    FileType::Unknown => "unknown",
+                }
+            })))
+        }
+        Err(e) => {
+            tracing::error!("Failed to reprocess file: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
 }

@@ -91,17 +91,43 @@ async fn main() -> Result<()> {
         if cli_mode {
             // Run both CLI and web server
             println!("🌐 Starting web server at http://{}:{}...", web_host, web_port);
+            println!("Hindsight agent ready. Type a message (or 'quit' to exit):");
+
+            let (shutdown_tx, mut shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
+
+            // Handle Ctrl+C for both CLI and web server
+            let shutdown_tx_clone = shutdown_tx.clone();
+            tokio::spawn(async move {
+                match tokio::signal::ctrl_c().await {
+                    Ok(()) => {
+                        println!("\n\nReceived Ctrl+C, shutting down...");
+                    }
+                    Err(err) => {
+                        tracing::error!("Failed to install Ctrl+C handler: {}", err);
+                    }
+                }
+                let _ = shutdown_tx_clone.send(());
+            });
+
             let web_handle = tokio::spawn(async move {
                 if let Err(e) = web_server.run().await {
                     tracing::error!("Web server error: {}", e);
                 }
             });
 
-            println!("Hindsight agent ready. Type a message (or 'quit' to exit):\n");
-            run_cli_repl(cara).await?;
+            // Run CLI REPL with shutdown handling
+            let cli_result = tokio::select! {
+                _ = shutdown_rx.recv() => {
+                    println!("CLI shutdown signal received");
+                    Ok(())
+                }
+                result = run_cli_repl(cara) => result,
+            };
 
-            // Cancel web server when CLI exits
+            // Cancel web server when CLI exits or is interrupted
             web_handle.abort();
+            cli_result?;
+
         } else {
             // Run web server only
             web_server.run().await?;
@@ -118,36 +144,72 @@ async fn main() -> Result<()> {
 
 /// Run the interactive CLI REPL.
 async fn run_cli_repl(cara: CaraPipeline) -> Result<()> {
-    let stdin = io::stdin();
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
+
+    // Spawn a task to handle Ctrl+C for the CLI
+    let shutdown_tx_clone = shutdown_tx.clone();
+    tokio::spawn(async move {
+        match tokio::signal::ctrl_c().await {
+            Ok(()) => {
+                println!("\n\nReceived Ctrl+C, shutting down CLI...");
+            }
+            Err(err) => {
+                tracing::error!("Failed to install Ctrl+C handler: {}", err);
+            }
+        }
+        let _ = shutdown_tx_clone.send(());
+    });
+
     loop {
         print!("> ");
         io::stdout().flush()?;
 
-        let mut input = String::new();
-        stdin.read_line(&mut input)?;
-        let input = input.trim();
+        // Use select to wait for either input or shutdown signal
+        tokio::select! {
+            _ = shutdown_rx.recv() => {
+                println!("CLI shutdown signal received");
+                break;
+            }
+            _ = tokio::time::sleep(tokio::time::Duration::from_millis(100)) => {
+                // Small delay to allow shutdown signal to be processed
+                let stdin = io::stdin();
+                let mut input = String::new();
 
-        if input.eq_ignore_ascii_case("quit") || input.eq_ignore_ascii_case("exit") {
-            break;
-        }
+                match stdin.read_line(&mut input) {
+                    Ok(_) => {
+                        let input = input.trim();
 
-        if input.is_empty() {
-            continue;
-        }
+                        if input.eq_ignore_ascii_case("quit") || input.eq_ignore_ascii_case("exit") {
+                            break;
+                        }
 
-        match cara.retain(input).await {
-            Ok(memories) => {
-                if !memories.is_empty() {
-                    tracing::info!("Retained {} new memories", memories.len());
+                        if !input.is_empty() {
+                            match cara.retain(input).await {
+                                Ok(memories) => {
+                                    if !memories.is_empty() {
+                                        tracing::info!("Retained {} new memories", memories.len());
+                                    }
+                                }
+                                Err(e) => tracing::error!("Retain error: {}", e),
+                            }
+
+                            match cara.reflect(input, 2000).await {
+                                Ok(response) => println!("\n{}\n", response),
+                                Err(e) => tracing::error!("Reflect error: {}", e),
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        if e.kind() != io::ErrorKind::Interrupted {
+                            tracing::error!("IO error: {}", e);
+                        }
+                        break;
+                    }
                 }
             }
-            Err(e) => tracing::error!("Retain error: {}", e),
-        }
-
-        match cara.reflect(input, 2000).await {
-            Ok(response) => println!("\n{}\n", response),
-            Err(e) => tracing::error!("Reflect error: {}", e),
         }
     }
+
+    println!("Goodbye!");
     Ok(())
 }

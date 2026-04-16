@@ -49,6 +49,13 @@ function hindsightApp() {
             file: null
         },
 
+        // File management
+        files: [],
+        fileStatus: {
+            deleting: null,
+            reprocessing: null
+        },
+
         // Cytoscape instance
         cy: null,
 
@@ -66,6 +73,8 @@ function hindsightApp() {
             this.$watch('activeTab', (value) => {
                 if (value === 'analytics') {
                     this.$nextTick(() => this.loadAnalytics());
+                } else if (value === 'files') {
+                    this.loadFiles();
                 }
             });
         },
@@ -521,6 +530,92 @@ function hindsightApp() {
         formatTime(timestamp) {
             const date = new Date(timestamp);
             return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        },
+
+        // File management methods
+        async loadFiles() {
+            try {
+                const response = await fetch(`${API_BASE}/files`);
+                const data = await response.json();
+                this.files = data;
+            } catch (error) {
+                console.error('Failed to load files:', error);
+                this.files = [];
+            }
+        },
+
+        async reprocessFile(fileId, filename) {
+            if (!confirm(`Reprocess "${filename}"? This will create new memories from the file.`)) {
+                return;
+            }
+
+            this.fileStatus.reprocessing = fileId;
+
+            try {
+                const response = await fetch(`${API_BASE}/files/${fileId}/reprocess`, {
+                    method: 'POST'
+                });
+
+                if (!response.ok) {
+                    throw new Error('Reprocess failed');
+                }
+
+                const result = await response.json();
+                alert(`✅ Successfully reprocessed ${filename}!\n\nCreated ${result.memories_created} new memories.\nProcessing time: ${result.processing_time_ms}ms`);
+
+                // Refresh stats and files
+                await this.loadStats();
+                await this.loadFiles();
+
+            } catch (error) {
+                console.error('Reprocess error:', error);
+                alert(`❌ Failed to reprocess ${filename}. The file may no longer exist on disk.`);
+            } finally {
+                this.fileStatus.reprocessing = null;
+            }
+        },
+
+        async deleteFile(fileId, filename) {
+            if (!confirm(`Delete "${filename}"? This will only remove the file record, not the memories that were created from it.`)) {
+                return;
+            }
+
+            this.fileStatus.deleting = fileId;
+
+            try {
+                const response = await fetch(`${API_BASE}/files/${fileId}`, {
+                    method: 'DELETE'
+                });
+
+                if (!response.ok) {
+                    throw new Error('Delete failed');
+                }
+
+                // Remove file from local array
+                this.files = this.files.filter(f => f.id !== fileId);
+
+                // Show success message
+                alert(`✅ Successfully deleted "${filename}"`);
+
+            } catch (error) {
+                console.error('Delete error:', error);
+                alert(`❌ Failed to delete ${filename}. Please try again.`);
+            } finally {
+                this.fileStatus.deleting = null;
+            }
+        },
+
+        formatFileSize(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+        },
+
+        formatDateTime(dateString) {
+            const date = new Date(dateString);
+            return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         }
     };
 }

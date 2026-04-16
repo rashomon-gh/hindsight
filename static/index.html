@@ -95,6 +95,10 @@
                         :class="['network-tab', 'py-4', 'px-1', 'border-b-2', 'font-medium', 'text-sm', activeTab === 'chat' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300']">
                     💬 Chat & Upload
                 </button>
+                <button @click="activeTab = 'files'"
+                        :class="['network-tab', 'py-4', 'px-1', 'border-b-2', 'font-medium', 'text-sm', activeTab === 'files' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300']">
+                    📁 Files
+                </button>
             </nav>
         </div>
     </div>
@@ -441,6 +445,93 @@
                             Invalid file type selected. Please choose a PDF or Markdown file.
                         </span>
                     </p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Files Management Tab -->
+        <div x-show="activeTab === 'files'" x-transition>
+            <div class="bg-white rounded-lg shadow">
+                <!-- Files Header -->
+                <div class="border-b p-4">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <h2 class="text-lg font-semibold">File Management</h2>
+                            <p class="text-sm text-gray-500">View, reprocess, and delete uploaded files</p>
+                        </div>
+                        <button @click="loadFiles()"
+                                class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium">
+                            🔄 Refresh
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Files Table -->
+                <div class="p-4">
+                    <div x-show="files.length === 0" class="text-center py-12 text-gray-500">
+                        <svg class="w-16 h-16 mx-auto mb-4 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                        </svg>
+                        <p class="text-lg font-medium">No files uploaded yet</p>
+                        <p class="text-sm">Upload a PDF or Markdown file through the chat interface to get started</p>
+                    </div>
+
+                    <div x-show="files.length > 0" class="overflow-x-auto">
+                        <table class="min-w-full divide-y divide-gray-200">
+                            <thead class="bg-gray-50">
+                                <tr>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">File</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Type</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Size</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Chunks</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Processed</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody class="bg-white divide-y divide-gray-200">
+                                <template x-for="file in files" :key="file.id">
+                                    <tr class="hover:bg-gray-50">
+                                        <td class="px-6 py-4 whitespace-nowrap">
+                                            <div class="flex items-center">
+                                                <svg class="w-5 h-5 text-gray-400 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                                                </svg>
+                                                <div class="text-sm font-medium text-gray-900" x-text="file.filename"></div>
+                                            </div>
+                                        </td>
+                                        <td class="px-6 py-4 whitespace-nowrap">
+                                            <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full"
+                                                  :class="{
+                                                      'bg-red-100 text-red-800': file.file_type === 'pdf',
+                                                      'bg-blue-100 text-blue-800': file.file_type === 'markdown',
+                                                      'bg-gray-100 text-gray-800': file.file_type === 'text'
+                                                  }" x-text="file.file_type.toUpperCase()">
+                                            </span>
+                                        </td>
+                                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500" x-text="formatFileSize(file.size_bytes)"></td>
+                                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500" x-text="file.chunk_count"></td>
+                                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500" x-text="formatDateTime(file.processed_at)"></td>
+                                        <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                                            <div class="flex space-x-2">
+                                                <button @click="reprocessFile(file.id, file.filename)"
+                                                        :disabled="fileStatus.reprocessing === file.id"
+                                                        class="text-blue-600 hover:text-blue-900 disabled:text-gray-400 disabled:cursor-not-allowed">
+                                                    <span x-show="fileStatus.reprocessing !== file.id">🔄 Reprocess</span>
+                                                    <span x-show="fileStatus.reprocessing === file.id">⏳ Processing...</span>
+                                                </button>
+                                                <button @click="deleteFile(file.id, file.filename)"
+                                                        :disabled="fileStatus.deleting === file.id"
+                                                        class="text-red-600 hover:text-red-900 disabled:text-gray-400 disabled:cursor-not-allowed">
+                                                    <span x-show="fileStatus.deleting !== file.id">🗑️ Delete</span>
+                                                    <span x-show="fileStatus.deleting === file.id">⏳ Deleting...</span>
+                                                </button>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
             </div>
         </div>
