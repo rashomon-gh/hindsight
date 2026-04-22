@@ -13,7 +13,7 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::compression::CompressionLayer;
 use tower_http::trace::TraceLayer;
 use tower_http::services::ServeDir;
-use tracing::info;
+use tracing::{info, debug, warn};
 
 use crate::cara::CaraPipeline;
 use crate::storage::Storage;
@@ -44,6 +44,11 @@ pub struct WebServer {
 
 impl WebServer {
     pub fn new(config: WebConfig, storage: Arc<Storage>, cara: Arc<CaraPipeline>) -> Self {
+        debug!(
+            host = %config.host,
+            port = config.port,
+            "Creating web server instance"
+        );
         Self { config, storage, cara }
     }
 
@@ -67,10 +72,13 @@ impl WebServer {
 
         let serve_dir = tokio::fs::read_dir("static").await;
         if serve_dir.is_ok() {
-            info!("Serving static files from ./static directory");
+            debug!("Serving static files from ./static directory");
+        } else {
+            warn!("Static directory not found, dashboard may not be available");
         }
 
         let addr = format!("{}:{}", self.config.host, self.config.port);
+        debug!("Attempting to bind to {}", addr);
         let listener = TcpListener::bind(&addr).await?;
 
         info!("🌐 Web server starting at http://{}", addr);
@@ -79,6 +87,7 @@ impl WebServer {
 
         axum::serve(listener, app).await?;
 
+        info!("Web server stopped gracefully");
         Ok(())
     }
 }

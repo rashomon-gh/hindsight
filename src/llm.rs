@@ -8,6 +8,7 @@ use std::time::Duration;
 use anyhow::{Result, anyhow};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use tracing::{debug, info, error, instrument};
 
 use crate::config::LLMConfig;
 
@@ -75,6 +76,14 @@ pub struct LLMClient {
 impl LLMClient {
     /// Creates a new client from the given [`LLMConfig`].
     pub fn new(config: &LLMConfig) -> Self {
+        info!(
+            base_url = %config.base_url,
+            embed_base_url = %config.embed_base_url.as_ref().unwrap_or(&config.base_url),
+            chat_model = %config.chat_model,
+            embed_model = %config.embed_model,
+            max_tokens = config.max_tokens,
+            "Creating LLM client"
+        );
         let client = Client::builder()
             .timeout(Duration::from_secs(180))
             .build()
@@ -87,6 +96,7 @@ impl LLMClient {
             .trim_end_matches('/')
             .to_string();
 
+        debug!("LLM client created successfully");
         Self {
             client,
             base_url: config.base_url.trim_end_matches('/').to_string(),
@@ -107,12 +117,23 @@ impl LLMClient {
     ///
     /// Returns an error if the HTTP request fails, the server returns a
     /// non-success status, or the response contains no choices.
+    #[instrument(skip(self, messages))]
     pub async fn chat_completion(
         &self,
         messages: Vec<ChatMessage>,
         temperature: Option<f64>,
         max_tokens: Option<u64>,
     ) -> Result<String> {
+        let message_count = messages.len();
+        let user_messages: usize = messages.iter().filter(|m| m.role == "user").count();
+        debug!(
+            message_count = message_count,
+            user_messages = user_messages,
+            temperature = ?temperature,
+            max_tokens = ?max_tokens,
+            model = %self.chat_model,
+            "Sending chat completion request"
+        );
         let request = ChatRequest {
             model: self.chat_model.clone(),
             messages,
@@ -120,29 +141,45 @@ impl LLMClient {
             max_tokens,
         };
 
+        let url = format!("{}/v1/chat/completions", self.base_url);
+        debug!(url = %url, "Sending request to LLM API");
         let response = self
             .client
-            .post(format!("{}/v1/chat/completions", self.base_url))
+            .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
             .json(&request)
             .send()
             .await?;
 
-        if !response.status().is_success() {
-            let status = response.status();
+        let status = response.status();
+        if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
+            error!(
+                status = %status,
+                body = %body,
+                "LLM chat request failed"
+            );
             return Err(anyhow!("LLM chat request failed ({}): {}", status, body));
         }
 
         let chat_response: ChatResponse = response.json().await?;
 
-        chat_response
+        let reply = chat_response
             .choices
             .into_iter()
             .next()
             .map(|c| c.message.content)
-            .ok_or_else(|| anyhow!("No response choices from LLM"))
+            .ok_or_else(|| {
+                error!("No response choices from LLM");
+                anyhow!("No response choices from LLM")
+            })?;
+
+        info!(
+            reply_length = reply.len(),
+            "Chat completion successful"
+        );
+        Ok(reply)
     }
 
     /// Generates embeddings for a batch of texts.
@@ -153,34 +190,57 @@ impl LLMClient {
     ///
     /// Returns an error if the HTTP request fails or the server returns a
     /// non-success status.
+    #[instrument(skip(self, texts))]
     pub async fn embed(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
+        let text_count = texts.len();
+        let total_chars: usize = texts.iter().map(|t| t.len()).sum();
+        debug!(
+            text_count = text_count,
+            total_chars = total_chars,
+            model = %self.embed_model,
+            "Generating embeddings"
+        );
         let request = EmbedRequest {
             model: self.embed_model.clone(),
             input: texts,
         };
 
+        let url = format!("{}/v1/embeddings", self.embed_base_url);
+        debug!(url = %url, "Sending request to embeddings API");
         let response = self
             .client
-            .post(format!("{}/v1/embeddings", self.embed_base_url))
+            .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
             .json(&request)
             .send()
             .await?;
 
-        if !response.status().is_success() {
-            let status = response.status();
+        let status = response.status();
+        if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
+            error!(
+                status = %status,
+                body = %body,
+                "LLM embed request failed"
+            );
             return Err(anyhow!("LLM embed request failed ({}): {}", status, body));
         }
 
         let embed_response: EmbedResponse = response.json().await?;
 
-        Ok(embed_response
+        let embeddings: Vec<Vec<f32>> = embed_response
             .data
             .into_iter()
             .map(|d| d.embedding)
-            .collect())
+            .collect();
+
+        info!(
+            embeddings_count = embeddings.len(),
+            embedding_dim = embeddings.first().map(|e| e.len()).unwrap_or(0),
+            "Embeddings generated successfully"
+        );
+        Ok(embeddings)
     }
 
     /// Convenience wrapper around [`embed`](Self::embed) for a single text.

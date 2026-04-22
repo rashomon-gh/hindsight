@@ -8,6 +8,7 @@
 use anyhow::Result;
 use chrono::Utc;
 use uuid::Uuid;
+use tracing::{debug, info, instrument};
 
 use crate::llm::ChatMessage;
 use crate::models::*;
@@ -25,11 +26,21 @@ pub struct CaraPipeline {
 impl CaraPipeline {
     /// Creates a new CARA pipeline with the given profile and TEMPR backend.
     pub fn new(profile: AgentProfile, tempr: TemprPipeline) -> Self {
+        info!(
+            agent_name = %profile.name,
+            skepticism = profile.skepticism,
+            literalism = profile.literalism,
+            empathy = profile.empathy,
+            bias_strength = profile.bias_strength,
+            "Creating CARA pipeline"
+        );
         Self { profile, tempr }
     }
 
     /// Delegates to [`TemprPipeline::retain`].
+    #[instrument(skip(self, conversation))]
     pub async fn retain(&self, conversation: &str, chat_id: Option<Uuid>) -> Result<Vec<MemoryUnit>> {
+        debug!("Delegating to TEMPR retain operation");
         self.tempr.retain(conversation, chat_id).await
     }
 
@@ -39,12 +50,26 @@ impl CaraPipeline {
     ///
     /// `token_budget` controls how many tokens of recalled context are
     /// injected into the prompt.
+    #[instrument(skip(self, user_message))]
     pub async fn reflect(&self, user_message: &str, token_budget: usize, chat_id: Option<Uuid>) -> Result<(String, Vec<MemoryUnit>)> {
+        info!(
+            message_length = user_message.len(),
+            token_budget = token_budget,
+            chat_id = ?chat_id,
+            "Starting CARA reflect operation"
+        );
         let recalled = self.tempr.recall(user_message, token_budget).await?;
 
+        info!(
+            memories_recalled = recalled.len(),
+            "Memory recall completed"
+        );
+
         let memory_context = if recalled.is_empty() {
+            debug!("No relevant memories found for context");
             "No relevant memories found.".to_string()
         } else {
+            debug!("Formatting memory context with {} recalled memories", recalled.len());
             recalled
                 .iter()
                 .map(|sm| {
@@ -103,16 +128,28 @@ You may include multiple opinion tags. Do not mention the XML tags in your visib
             },
         ];
 
+        debug!("Calling LLM for reflection response");
         let response = self
             .tempr
             .llm()
             .chat_completion(messages, Some(0.7), Some(2048))
             .await?;
 
+        debug!("Extracting opinions from LLM response");
         let (clean_response, new_opinions) = extract_opinions(&response);
+
+        info!(
+            opinions_extracted = new_opinions.len(),
+            "Opinion extraction completed"
+        );
 
         let mut stored_opinions = Vec::new();
         for (opinion_text, confidence) in &new_opinions {
+            debug!(
+                confidence = confidence,
+                text_length = opinion_text.len(),
+                "Storing new opinion"
+            );
             let embedding = self
                 .tempr
                 .llm()
@@ -132,10 +169,10 @@ You may include multiple opinion tags. Do not mention the XML tags in your visib
                     chat_id,
                 )
                 .await?;
-            tracing::info!(
-                "Stored new opinion: {} (confidence: {:.2})",
-                opinion_text,
-                confidence
+            info!(
+                opinion_id = %id,
+                confidence = confidence,
+                "New opinion stored successfully"
             );
             stored_opinions.push(MemoryUnit {
                 id,
@@ -149,6 +186,11 @@ You may include multiple opinion tags. Do not mention the XML tags in your visib
             });
         }
 
+        info!(
+            response_length = clean_response.len(),
+            opinions_stored = stored_opinions.len(),
+            "CARA reflect operation completed"
+        );
         Ok((clean_response, stored_opinions))
     }
 }

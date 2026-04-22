@@ -22,6 +22,7 @@
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use tracing::{info, debug, warn};
 
 /// Top-level configuration containing database, LLM, and web settings.
 #[derive(Debug, Clone, Deserialize)]
@@ -104,13 +105,34 @@ impl Config {
     ///
     /// Returns an error if the file is missing or cannot be parsed.
     pub fn load() -> Result<Self> {
+        info!("Loading configuration from config.yaml");
         let settings = config::Config::builder()
             .add_source(config::File::with_name("config.yaml"))
             .build()
             .context("Failed to load config.yaml")?;
 
-        settings
+        let config: Config = settings
             .try_deserialize()
-            .context("Failed to parse config.yaml")
+            .context("Failed to parse config.yaml")?;
+
+        debug!(
+            database_url = %config.database.url,
+            llm_base_url = %config.llm.base_url,
+            chat_model = %config.llm.chat_model,
+            embed_model = %config.llm.embed_model,
+            embedding_dim = config.llm.embedding_dim,
+            web_host = %config.web.host,
+            web_port = config.web.port,
+            "Configuration loaded successfully"
+        );
+
+        if config.llm.max_tokens > 32768 {
+            warn!(
+                max_tokens = config.llm.max_tokens,
+                "High max_tokens value may cause issues with some models"
+            );
+        }
+
+        Ok(config)
     }
 }

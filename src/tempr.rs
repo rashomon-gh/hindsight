@@ -18,6 +18,7 @@ use std::collections::{HashMap, HashSet};
 use anyhow::{Result, anyhow};
 use chrono::Utc;
 use uuid::Uuid;
+use tracing::{debug, info, warn, error, instrument};
 
 use crate::llm::{ChatMessage, LLMClient};
 use crate::models::*;
@@ -46,6 +47,10 @@ impl TemprPipeline {
     /// Creates a new pipeline from the given LLM client, storage handle, and
     /// embedding dimensionality.
     pub fn new(llm: LLMClient, storage: Storage, embedding_dim: usize) -> Self {
+        info!(
+            embedding_dim = embedding_dim,
+            "Creating TEMPR pipeline"
+        );
         Self {
             llm,
             storage,
@@ -70,7 +75,13 @@ impl TemprPipeline {
     /// bumped by 0.05 (capped at 1.0).
     ///
     /// Returns the list of newly created [`MemoryUnit`]s.
+    #[instrument(skip(self, conversation))]
     pub async fn retain(&self, conversation: &str, chat_id: Option<Uuid>) -> Result<Vec<MemoryUnit>> {
+        info!(
+            conversation_length = conversation.len(),
+            chat_id = ?chat_id,
+            "Starting TEMPR retain operation"
+        );
         let system_prompt = r#"You are a memory extraction system. Analyze the conversation and extract structured facts.
 
 For each fact, provide a JSON object with:
@@ -94,18 +105,30 @@ If no facts can be extracted, return: {"facts": []}"#;
             },
         ];
 
+        debug!("Calling LLM for fact extraction");
         let response = self
             .llm()
             .chat_completion(messages, Some(0.3), Some(self.llm().max_tokens()))
             .await?;
         let json_str = extract_json(&response);
+        debug!("Parsing extracted facts from LLM response");
         let extracted: ExtractedFacts = serde_json::from_str(json_str).map_err(|e| {
+            error!(
+                error = %e,
+                raw_response = %response,
+                "Failed to parse extracted facts"
+            );
             anyhow!(
                 "Failed to parse extracted facts: {} — raw response: {}",
                 e,
                 response
             )
         })?;
+
+        info!(
+            facts_extracted = extracted.facts.len(),
+            "Fact extraction completed"
+        );
 
         let mut stored = Vec::new();
         let mut fact_ids: Vec<Uuid> = Vec::new();
@@ -114,10 +137,19 @@ If no facts can be extracted, return: {"facts": []}"#;
             let id = Uuid::new_v4();
             fact_ids.push(id);
 
+            debug!(
+                fact_index = fact_ids.len() - 1,
+                network = %fact.network.as_str(),
+                entities_count = fact.entities.len(),
+                "Processing extracted fact"
+            );
             let embedding = match self.llm.embed_single(fact.content.clone()).await {
                 Ok(emb) => emb,
                 Err(e) => {
-                    tracing::warn!("Failed to generate embedding, using zero vector: {}", e);
+                    warn!(
+                        error = %e,
+                        "Failed to generate embedding, using zero vector"
+                    );
                     vec![0.0f32; self.embedding_dim]
                 }
             };
@@ -134,6 +166,10 @@ If no facts can be extracted, return: {"facts": []}"#;
                 )
                 .await?;
 
+            debug!(
+                memory_id = %id,
+                "Memory stored successfully"
+            );
             stored.push(MemoryUnit {
                 id,
                 network: fact.network,
@@ -146,10 +182,20 @@ If no facts can be extracted, return: {"facts": []}"#;
             });
         }
 
+        info!(
+            edges_to_create = extracted.facts.iter().map(|f| f.links.len()).sum::<usize>(),
+            "Creating edges between facts"
+        );
         for (i, fact) in extracted.facts.iter().enumerate() {
             for link in &fact.links {
                 if link.target_fact_index < fact_ids.len() && link.target_fact_index != i {
                     let weight = default_edge_weight(&link.edge_type);
+                    debug!(
+                        source_id = %fact_ids[i],
+                        target_id = %fact_ids[link.target_fact_index],
+                        edge_type = %link.edge_type.as_str(),
+                        "Creating edge"
+                    );
                     self.storage
                         .store_edge(
                             fact_ids[i],
@@ -162,6 +208,7 @@ If no facts can be extracted, return: {"facts": []}"#;
             }
         }
 
+        info!("Checking for opinion reinforcement");
         for fact in &extracted.facts {
             if !fact.entities.is_empty() {
                 let related = self
@@ -172,34 +219,53 @@ If no facts can be extracted, return: {"facts": []}"#;
                     if let Some(current_conf) = opinion.confidence {
                         let new_conf = (current_conf + 0.05).min(1.0);
                         self.storage.update_confidence(opinion.id, new_conf).await?;
-                        tracing::info!(
-                            "Reinforced opinion {} confidence: {:.2} -> {:.2}",
-                            opinion.id,
-                            current_conf,
-                            new_conf
+                        info!(
+                            opinion_id = %opinion.id,
+                            old_confidence = current_conf,
+                            new_confidence = new_conf,
+                            "Reinforced opinion confidence"
                         );
                     }
                 }
             }
         }
 
+        info!(
+            memories_stored = stored.len(),
+            "TEMPR retain operation completed successfully"
+        );
         Ok(stored)
     }
 
     /// Retrieves memories relevant to a query within a token budget.
     ///
     /// Runs semantic, keyword, and temporal searches in parallel, then
-    /// performs spreading activation from the top results. All four ranked
+    /// performs spreading activation from top results. All four ranked
     /// lists are fused with RRF, deduplicated, and trimmed to fit
     /// `token_budget` (estimated at ~4 characters per token).
+    #[instrument(skip(self))]
     pub async fn recall(&self, query: &str, token_budget: usize) -> Result<Vec<ScoredMemory>> {
+        info!(
+            query = %query,
+            token_budget = token_budget,
+            "Starting TEMPR recall operation"
+        );
+        debug!("Generating query embedding");
         let query_embedding = self.llm.embed_single(query.to_string()).await?;
 
+        debug!("Running parallel searches: semantic, keyword, temporal");
         let (semantic, keyword, temporal) = tokio::try_join!(
             self.storage.search_semantic(&query_embedding, SEARCH_LIMIT),
             self.storage.search_keyword(query, SEARCH_LIMIT),
             self.storage.search_temporal(SEARCH_LIMIT),
         )?;
+
+        info!(
+            semantic_results = semantic.len(),
+            keyword_results = keyword.len(),
+            temporal_results = temporal.len(),
+            "Initial searches completed"
+        );
 
         let seed_ids: Vec<Uuid> = semantic
             .iter()
@@ -209,6 +275,10 @@ If no facts can be extracted, return: {"facts": []}"#;
             .into_iter()
             .collect();
 
+        debug!(
+            seed_count = seed_ids.len(),
+            "Starting graph traversal"
+        );
         let graph = self.spreading_activation(&seed_ids).await;
 
         let rankings = vec![
@@ -218,6 +288,7 @@ If no facts can be extracted, return: {"facts": []}"#;
             graph,
         ];
 
+        debug!("Applying Reciprocal Rank Fusion");
         let fused = reciprocal_rank_fusion(&rankings, RRF_K);
 
         let mut results = Vec::new();
@@ -233,6 +304,11 @@ If no facts can be extracted, return: {"facts": []}"#;
             if let Some(memory) = self.storage.get_memory(*id).await? {
                 let tokens = estimate_tokens(&memory.content);
                 if tokens_used + tokens > token_budget {
+                    debug!(
+                        tokens_used = tokens_used,
+                        token_budget = token_budget,
+                        "Token budget reached"
+                    );
                     break;
                 }
                 tokens_used += tokens;
@@ -243,6 +319,11 @@ If no facts can be extracted, return: {"facts": []}"#;
             }
         }
 
+        info!(
+            results_count = results.len(),
+            tokens_used = tokens_used,
+            "TEMPR recall operation completed"
+        );
         Ok(results)
     }
 
@@ -251,11 +332,16 @@ If no facts can be extracted, return: {"facts": []}"#;
     /// Traverses up to [`GRAPH_MAX_HOPS`] hops, decaying activation by
     /// [`GRAPH_DECAY`] and the edge weight at each step. Nodes receiving
     /// activation below 0.1 are pruned.
+    #[instrument(skip(self))]
     async fn spreading_activation(&self, seed_ids: &[Uuid]) -> Vec<(Uuid, f64)> {
+        debug!(
+            seed_count = seed_ids.len(),
+            "Starting spreading activation traversal"
+        );
         let mut activated: HashMap<Uuid, f64> = HashMap::new();
         let mut frontier: Vec<(Uuid, f64)> = seed_ids.iter().map(|id| (*id, 1.0)).collect();
 
-        for _ in 0..GRAPH_MAX_HOPS {
+        for hop in 0..GRAPH_MAX_HOPS {
             let mut next_frontier = Vec::new();
             for (node_id, activation) in &frontier {
                 let current = activated.entry(*node_id).or_default();
@@ -274,15 +360,29 @@ If no facts can be extracted, return: {"facts": []}"#;
                         }
                     }
                     Err(e) => {
-                        tracing::warn!("Graph traversal error: {}", e);
+                        warn!(
+                            node_id = %node_id,
+                            error = %e,
+                            "Graph traversal error"
+                        );
                     }
                 }
             }
+            debug!(
+                hop = hop,
+                frontier_size = frontier.len(),
+                next_frontier_size = next_frontier.len(),
+                "Completed traversal hop"
+            );
             frontier = next_frontier;
         }
 
         let mut results: Vec<_> = activated.into_iter().collect();
         results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        debug!(
+            activated_nodes = results.len(),
+            "Graph traversal completed"
+        );
         results
     }
 }

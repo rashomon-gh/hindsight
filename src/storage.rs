@@ -8,6 +8,7 @@ use anyhow::{Result, anyhow};
 use chrono::{DateTime, Utc};
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
+use tracing::{debug, info, instrument};
 
 use crate::models::*;
 
@@ -21,8 +22,11 @@ impl Storage {
     ///
     /// Does **not** run migrations — call [`init_schema`](Self::init_schema)
     /// afterwards.
+    #[instrument(skip(database_url))]
     pub async fn connect(database_url: &str) -> Result<Self> {
+        info!("Connecting to PostgreSQL database");
         let pool = PgPool::connect(database_url).await?;
+        debug!("Successfully established database connection pool");
         Ok(Self { pool })
     }
 
@@ -30,7 +34,9 @@ impl Storage {
     /// and `pg_trgm` extensions, and builds the HNSW and GIN indexes.
     ///
     /// Safe to call multiple times (uses `IF NOT EXISTS`).
+    #[instrument(skip(self))]
     pub async fn init_schema(&self) -> Result<()> {
+        info!("Initializing database schema");
         let stmts: &[&str] = &[
             "CREATE EXTENSION IF NOT EXISTS vector",
             "CREATE EXTENSION IF NOT EXISTS pg_trgm",
@@ -77,8 +83,10 @@ impl Storage {
         ];
 
         for stmt in stmts {
+            debug!("Executing schema statement: {}", &stmt[..stmt.len().min(60)]);
             sqlx::query(stmt).execute(&self.pool).await?;
         }
+        info!("Database schema initialization completed");
 
         let _ = sqlx::query(
             "ALTER TABLE memories ADD COLUMN IF NOT EXISTS source_chat_id UUID REFERENCES chats(id) ON DELETE CASCADE",
@@ -96,6 +104,7 @@ impl Storage {
     }
 
     /// Inserts a new memory unit with its embedding and entity list.
+    #[instrument(skip(self, content, embedding, entities))]
     pub async fn store_memory(
         &self,
         id: Uuid,
@@ -106,6 +115,14 @@ impl Storage {
         confidence: Option<f32>,
         source_chat_id: Option<Uuid>,
     ) -> Result<()> {
+        debug!(
+            memory_id = %id,
+            network = %network.as_str(),
+            entities_count = entities.len(),
+            confidence = ?confidence,
+            "Storing memory in {} network",
+            network.as_str()
+        );
         let embed_str = format_vector(embedding);
         let entities_json = serde_json::to_value(entities)?;
 
@@ -123,10 +140,16 @@ impl Storage {
         .execute(&self.pool)
         .await?;
 
+        info!(
+            memory_id = %id,
+            network = %network.as_str(),
+            "Memory stored successfully"
+        );
         Ok(())
     }
 
     /// Inserts a directed edge between two memory units.
+    #[instrument(skip(self))]
     pub async fn store_edge(
         &self,
         source_id: Uuid,
@@ -134,6 +157,13 @@ impl Storage {
         edge_type: EdgeType,
         weight: f32,
     ) -> Result<()> {
+        debug!(
+            source_id = %source_id,
+            target_id = %target_id,
+            edge_type = %edge_type.as_str(),
+            weight = weight,
+            "Creating edge between memories"
+        );
         let id = Uuid::new_v4();
         sqlx::query(
             "INSERT INTO edges (id, source_id, target_id, edge_type, weight, created_at) VALUES ($1, $2, $3, $4, $5, NOW())",
@@ -152,11 +182,17 @@ impl Storage {
     /// Semantic search using cosine distance over HNSW-indexed embeddings.
     ///
     /// Returns up to `limit` results scored by `1 - cosine_distance`.
+    #[instrument(skip(self, query_embedding))]
     pub async fn search_semantic(
         &self,
         query_embedding: &[f32],
         limit: usize,
     ) -> Result<Vec<ScoredMemory>> {
+        debug!(
+            limit = limit,
+            embedding_dim = query_embedding.len(),
+            "Performing semantic search"
+        );
         let embed_str = format_vector(query_embedding);
         let rows = sqlx::query(
             r#"SELECT id, network_type, content, embedding::text AS embedding_text,
@@ -180,13 +216,23 @@ impl Storage {
                 score,
             });
         }
+        info!(
+            results_count = results.len(),
+            "Semantic search completed"
+        );
         Ok(results)
     }
 
     /// Full-text keyword search using PostgreSQL `ts_rank` (BM25-like).
     ///
     /// Words shorter than 3 characters are ignored.
+    #[instrument(skip(self, query))]
     pub async fn search_keyword(&self, query: &str, limit: usize) -> Result<Vec<ScoredMemory>> {
+        debug!(
+            query = %query,
+            limit = limit,
+            "Performing keyword search"
+        );
         let filtered_query: String = query
             .split_whitespace()
             .filter(|w| w.len() > 2)
@@ -194,6 +240,7 @@ impl Storage {
             .join(" ");
 
         if filtered_query.is_empty() {
+            debug!("Filtered query is empty, returning no results");
             return Ok(Vec::new());
         }
 
@@ -219,12 +266,21 @@ impl Storage {
                 score,
             });
         }
+        info!(
+            results_count = results.len(),
+            "Keyword search completed"
+        );
         Ok(results)
     }
 
     /// Temporal search ordered by recency, scored with an exponential decay
     /// (half-life ≈ 1 day).
+    #[instrument(skip(self))]
     pub async fn search_temporal(&self, limit: usize) -> Result<Vec<ScoredMemory>> {
+        debug!(
+            limit = limit,
+            "Performing temporal search"
+        );
         let rows = sqlx::query(
             r#"SELECT id, network_type, content, embedding::text AS embedding_text,
                       entities, confidence, created_at, updated_at,
@@ -245,12 +301,21 @@ impl Storage {
                 score,
             });
         }
+        info!(
+            results_count = results.len(),
+            "Temporal search completed"
+        );
         Ok(results)
     }
 
     /// Returns the outgoing neighbors (target ID + edge weight) of a memory
     /// unit for graph traversal.
+    #[instrument(skip(self))]
     pub async fn get_neighbors(&self, memory_id: Uuid) -> Result<Vec<(Uuid, f32)>> {
+        debug!(
+            memory_id = %memory_id,
+            "Fetching neighbors for memory"
+        );
         let rows = sqlx::query("SELECT target_id, weight FROM edges WHERE source_id = $1")
             .bind(memory_id)
             .fetch_all(&self.pool)
@@ -262,10 +327,16 @@ impl Storage {
             let weight: f32 = row.get("weight");
             results.push((target_id, weight));
         }
+        debug!(
+            memory_id = %memory_id,
+            neighbors_count = results.len(),
+            "Retrieved neighbors"
+        );
         Ok(results)
     }
 
     /// Fetches a single memory unit by ID.
+    #[instrument(skip(self))]
     pub async fn get_memory(&self, id: Uuid) -> Result<Option<MemoryUnit>> {
         let row = sqlx::query(
             "SELECT id, network_type, content, embedding::text AS embedding_text, entities, confidence, created_at, updated_at FROM memories WHERE id = $1",
@@ -276,11 +347,15 @@ impl Storage {
 
         match row {
             Some(row) => Ok(Some(row_to_memory(&row)?)),
-            None => Ok(None),
+            None => {
+                debug!(memory_id = %id, "Memory not found");
+                Ok(None)
+            }
         }
     }
 
     /// Get all memories with pagination.
+    #[instrument(skip(self))]
     pub async fn get_all_memories(&self, limit: usize, offset: usize) -> Result<Vec<MemoryUnit>> {
         let rows = sqlx::query(
             "SELECT id, network_type, content, embedding::text AS embedding_text, entities, confidence, created_at, updated_at
@@ -297,10 +372,17 @@ impl Storage {
         for row in rows {
             results.push(row_to_memory(&row)?);
         }
+        info!(
+            results_count = results.len(),
+            limit = limit,
+            offset = offset,
+            "Retrieved all memories with pagination"
+        );
         Ok(results)
     }
 
     /// Get memories by network type with pagination.
+    #[instrument(skip(self))]
     pub async fn get_memories_by_network(&self, network: NetworkType, limit: usize, offset: usize) -> Result<Vec<MemoryUnit>> {
         let rows = sqlx::query(
             "SELECT id, network_type, content, embedding::text AS embedding_text, entities, confidence, created_at, updated_at
@@ -319,10 +401,16 @@ impl Storage {
         for row in rows {
             results.push(row_to_memory(&row)?);
         }
+        info!(
+            network = %network.as_str(),
+            results_count = results.len(),
+            "Retrieved memories by network"
+        );
         Ok(results)
     }
 
     /// Get all edges for graph visualization.
+    #[instrument(skip(self))]
     pub async fn get_all_edges(&self) -> Result<Vec<Edge>> {
         let rows = sqlx::query(
             "SELECT id, source_id, target_id, edge_type, weight, created_at FROM edges"
@@ -350,10 +438,12 @@ impl Storage {
                 created_at,
             });
         }
+        info!(edges_count = results.len(), "Retrieved all edges");
         Ok(results)
     }
 
     /// Get all unique entities from memories.
+    #[instrument(skip(self))]
     pub async fn get_all_entities(&self) -> Result<Vec<String>> {
         let rows = sqlx::query(
             "SELECT DISTINCT jsonb_array_elements_text(entities) AS entity
@@ -369,10 +459,15 @@ impl Storage {
             let entity: String = row.get("entity");
             entities.push(entity);
         }
+        info!(
+            entities_count = entities.len(),
+            "Retrieved all unique entities"
+        );
         Ok(entities)
     }
 
     /// Get detailed neighbors with full memory and edge information.
+    #[instrument(skip(self))]
     pub async fn get_neighbors_detailed(&self, memory_id: Uuid, limit: usize) -> Result<Vec<(MemoryUnit, EdgeType, f32)>> {
         let rows = sqlx::query(
             r#"SELECT e.target_id, e.edge_type, e.weight,
@@ -397,12 +492,19 @@ impl Storage {
             let memory = row_to_memory(&row)?;
             results.push((memory, edge_type, weight));
         }
+        debug!(
+            memory_id = %memory_id,
+            neighbors_count = results.len(),
+            "Retrieved detailed neighbors"
+        );
         Ok(results)
     }
 
     /// Get statistics for analytics dashboard.
+    #[instrument(skip(self))]
     pub async fn get_statistics(&self) -> Result<crate::api::models::MemoryStats> {
         use crate::api::models::*;
+        debug!("Computing memory statistics");
 
         // Get total counts
         let total_memories: i64 = sqlx::query("SELECT COUNT(*) FROM memories")
@@ -518,7 +620,13 @@ impl Storage {
     /// Updates the confidence score of an opinion memory.
     ///
     /// Only affects rows where `network_type = 'opinion'`.
+    #[instrument(skip(self))]
     pub async fn update_confidence(&self, id: Uuid, new_confidence: f32) -> Result<()> {
+        debug!(
+            memory_id = %id,
+            new_confidence = new_confidence,
+            "Updating opinion confidence"
+        );
         sqlx::query(
             "UPDATE memories SET confidence = $1, updated_at = NOW() WHERE id = $2 AND network_type = 'opinion'",
         )
@@ -526,13 +634,23 @@ impl Storage {
         .bind(id)
         .execute(&self.pool)
         .await?;
+        debug!(
+            memory_id = %id,
+            "Opinion confidence updated successfully"
+        );
         Ok(())
     }
 
     /// Finds all opinion memories that share at least one entity with the
     /// given list. Used for opinion reinforcement during retention.
+    #[instrument(skip(self, entities))]
     pub async fn find_opinions_by_entities(&self, entities: &[String]) -> Result<Vec<MemoryUnit>> {
+        debug!(
+            entities_count = entities.len(),
+            "Searching opinions by entities"
+        );
         if entities.is_empty() {
+            debug!("No entities provided, returning empty result");
             return Ok(Vec::new());
         }
 
@@ -554,9 +672,16 @@ impl Storage {
             }
         }
 
+        info!(
+            opinions_found = results.len(),
+            entities_searched = entities.len(),
+            "Found opinions by entities"
+        );
         Ok(results)
     }
 
+    /// Creates a new chat session.
+    #[instrument(skip(self, title))]
     pub async fn create_chat(&self, id: Uuid, title: &str) -> Result<()> {
         sqlx::query(
             "INSERT INTO chats (id, title, created_at, updated_at) VALUES ($1, $2, NOW(), NOW())",
@@ -569,6 +694,13 @@ impl Storage {
     }
 
     pub async fn add_chat_message(&self, id: Uuid, chat_id: Uuid, role: &str, content: &str) -> Result<()> {
+        debug!(
+            message_id = %id,
+            chat_id = %chat_id,
+            role = %role,
+            content_length = content.len(),
+            "Adding message to chat"
+        );
         sqlx::query(
             "INSERT INTO chat_messages (id, chat_id, role, content, created_at) VALUES ($1, $2, $3, $4, NOW())",
         )
@@ -582,6 +714,7 @@ impl Storage {
     }
 
     pub async fn list_chats(&self) -> Result<Vec<(Uuid, String, DateTime<Utc>, DateTime<Utc>)>> {
+        debug!("Listing all chat sessions");
         let rows = sqlx::query(
             "SELECT id, title, created_at, updated_at FROM chats ORDER BY updated_at DESC",
         )
@@ -596,10 +729,14 @@ impl Storage {
             let updated_at: DateTime<Utc> = row.get("updated_at");
             results.push((id, title, created_at, updated_at));
         }
+        info!(chats_count = results.len(), "Retrieved chat sessions");
         Ok(results)
     }
 
+    /// Gets all messages for a specific chat.
+    #[instrument(skip(self))]
     pub async fn get_chat_messages(&self, chat_id: Uuid) -> Result<Vec<(Uuid, String, String, DateTime<Utc>)>> {
+        debug!(chat_id = %chat_id, "Retrieving chat messages");
         let rows = sqlx::query(
             "SELECT id, role, content, created_at FROM chat_messages WHERE chat_id = $1 ORDER BY created_at ASC",
         )
@@ -615,10 +752,18 @@ impl Storage {
             let created_at: DateTime<Utc> = row.get("created_at");
             results.push((id, role, content, created_at));
         }
+        debug!(
+            chat_id = %chat_id,
+            messages_count = results.len(),
+            "Retrieved chat messages"
+        );
         Ok(results)
     }
 
+    /// Gets all memories associated with a specific chat.
+    #[instrument(skip(self))]
     pub async fn get_memories_by_chat(&self, chat_id: Uuid) -> Result<Vec<MemoryUnit>> {
+        debug!(chat_id = %chat_id, "Retrieving memories for chat");
         let rows = sqlx::query(
             r#"SELECT id, network_type, content, embedding::text AS embedding_text,
                       entities, confidence, created_at, updated_at
@@ -632,14 +777,26 @@ impl Storage {
         for row in rows {
             results.push(row_to_memory(&row)?);
         }
+        debug!(
+            chat_id = %chat_id,
+            memories_count = results.len(),
+            "Retrieved memories for chat"
+        );
         Ok(results)
     }
 
+    /// Deletes a chat and all associated messages and memories.
+    #[instrument(skip(self))]
     pub async fn delete_chat(&self, chat_id: Uuid) -> Result<()> {
+        debug!(chat_id = %chat_id, "Deleting chat");
         sqlx::query("DELETE FROM chats WHERE id = $1")
             .bind(chat_id)
             .execute(&self.pool)
             .await?;
+        info!(
+            chat_id = %chat_id,
+            "Chat deleted successfully"
+        );
         Ok(())
     }
 }

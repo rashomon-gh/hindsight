@@ -13,6 +13,7 @@ use axum::{
 use serde::Deserialize;
 use std::sync::Arc;
 use uuid::Uuid;
+use tracing::{debug, info, error, warn};
 
 use crate::cara::CaraPipeline;
 use crate::storage::Storage;
@@ -61,19 +62,34 @@ pub fn create_api_router() -> Router<ApiState> {
 }
 
 /// GET /api/memories - List and search memories with pagination.
+#[tracing::instrument(skip(state))]
 pub async fn list_memories(
     State(state): State<ApiState>,
     Query(params): Query<MemoryQuery>,
 ) -> Result<Json<MemoryListResponse>, StatusCode> {
+    debug!(
+        limit = params.limit,
+        offset = params.offset,
+        network = ?params.network,
+        search = ?params.search,
+        "List memories request"
+    );
     let limit = params.limit.unwrap_or(50).min(200);
     let offset = params.offset.unwrap_or(0);
 
     let memories = if let Some(search_query) = &params.search {
         // Use keyword search for text queries
+        debug!("Performing keyword search");
         state.storage
             .search_keyword(search_query, limit * 2)
             .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .map_err(|e| {
+                error!(
+                    error = %e,
+                    "Keyword search failed"
+                );
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
             .into_iter()
             .map(|sm| sm.memory)
             .collect()
@@ -82,16 +98,30 @@ pub async fn list_memories(
         let network_type = NetworkType::from_str(network_str)
             .ok_or(StatusCode::BAD_REQUEST)?;
 
+        debug!(network = %network_str, "Filtering by network type");
         state.storage
             .get_memories_by_network(network_type, limit, offset)
             .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .map_err(|e| {
+                error!(
+                    error = %e,
+                    "Get memories by network failed"
+                );
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
     } else {
         // Get all memories with pagination
+        debug!("Getting all memories with pagination");
         state.storage
             .get_all_memories(limit, offset)
             .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .map_err(|e| {
+                error!(
+                    error = %e,
+                    "Get all memories failed"
+                );
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
     };
 
     let total = memories.len();
@@ -117,21 +147,37 @@ pub async fn list_memories(
 }
 
 /// GET /api/memories/:id - Get single memory with neighbors.
+#[tracing::instrument(skip(state))]
 pub async fn get_memory(
     State(state): State<ApiState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<MemoryDetail>, StatusCode> {
+    debug!(memory_id = %id, "Get memory request");
     let memory = state
         .storage
         .get_memory(id)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map_err(|e| {
+            error!(
+                memory_id = %id,
+                error = %e,
+                "Get memory failed"
+            );
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
         .ok_or(StatusCode::NOT_FOUND)?;
 
     let neighbors = state.storage
         .get_neighbors_detailed(id, 10)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| {
+            error!(
+                memory_id = %id,
+                error = %e,
+                "Get neighbors failed"
+            );
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     let api_memory = ApiMemory {
         id: memory.id,
@@ -167,32 +213,53 @@ pub async fn get_memory(
 }
 
 /// GET /api/graph - Export graph data for Cytoscape visualization.
+#[tracing::instrument(skip(state))]
 pub async fn get_graph(
     State(state): State<ApiState>,
     Query(params): Query<GraphQuery>,
 ) -> Result<Json<GraphData>, StatusCode> {
+    debug!(
+        limit = params.limit,
+        network = ?params.network,
+        "Get graph request"
+    );
     let limit = params.limit.unwrap_or(200);
 
     // Get memories (optionally filtered by network)
     let memories = if let Some(network_str) = &params.network {
+        debug!(network = %network_str, "Filtering graph by network");
         let network_type = NetworkType::from_str(network_str)
             .ok_or(StatusCode::BAD_REQUEST)?;
         state.storage
             .get_memories_by_network(network_type, limit, 0)
             .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .map_err(|e| {
+                error!(
+                    network = %network_str,
+                    error = %e,
+                    "Get memories by network failed"
+                );
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
     } else {
+        debug!("Getting all memories for graph");
         state.storage
             .get_all_memories(limit, 0)
             .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .map_err(|e| {
+                error!(error = %e, "Get all memories failed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
     };
 
     // Get all edges
     let edges = state.storage
         .get_all_edges()
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| {
+            error!(error = %e, "Get all edges failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     // Create filtered edge set (only include edges between visible memories)
     let memory_ids: std::collections::HashSet<Uuid> = memories
@@ -249,13 +316,18 @@ pub async fn get_graph(
 }
 
 /// GET /api/entities - List all unique entities.
+#[tracing::instrument(skip(state))]
 pub async fn list_entities(
     State(state): State<ApiState>,
 ) -> Result<Json<EntityList>, StatusCode> {
+    debug!("List entities request");
     let entities = state.storage
         .get_all_entities()
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| {
+            error!(error = %e, "Get all entities failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     let total = entities.len();
     Ok(Json(EntityList {
@@ -265,29 +337,43 @@ pub async fn list_entities(
 }
 
 /// GET /api/stats - Get analytics statistics.
+#[tracing::instrument(skip(state))]
 pub async fn get_stats(
     State(state): State<ApiState>,
 ) -> Result<Json<MemoryStats>, StatusCode> {
+    debug!("Get statistics request");
     let stats = state.storage
         .get_statistics()
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| {
+            error!(error = %e, "Get statistics failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     Ok(Json(stats))
 }
 
 /// GET /api/networks/:network_type - Get memories by network type.
+#[tracing::instrument(skip(state))]
 pub async fn get_by_network(
     State(state): State<ApiState>,
     Path(network_type): Path<String>,
 ) -> Result<Json<Vec<ApiMemory>>, StatusCode> {
+    debug!(network = %network_type, "Get memories by network request");
     let network = NetworkType::from_str(&network_type)
         .ok_or(StatusCode::BAD_REQUEST)?;
 
     let memories = state.storage
         .get_memories_by_network(network, 100, 0)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| {
+            error!(
+                network = %network_type,
+                error = %e,
+                "Get memories by network failed"
+            );
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     let api_memories: Vec<ApiMemory> = memories
         .into_iter()
@@ -306,16 +392,27 @@ pub async fn get_by_network(
 }
 
 /// POST /api/chat - Send a message and get a response with new memories.
+#[tracing::instrument(skip(state, req))]
 pub async fn chat(
     State(state): State<ApiState>,
     Json(req): Json<ChatRequest>,
 ) -> Result<Json<ChatResponse>, StatusCode> {
+    let message_length = req.message.len();
+    info!(
+        chat_id = ?req.chat_id,
+        message_length = message_length,
+        "Chat request received"
+    );
     if req.message.trim().is_empty() {
+        warn!("Empty message received in chat request");
         return Err(StatusCode::BAD_REQUEST);
     }
 
     let chat_id = match req.chat_id {
-        Some(id) => id,
+        Some(id) => {
+            debug!("Using existing chat session");
+            id
+        },
         None => {
             let id = Uuid::new_v4();
             let title: String = req.message.chars().take(50).collect();
@@ -324,10 +421,16 @@ pub async fn chat(
             } else {
                 title
             };
+            debug!(
+                chat_id = %id,
+                title = %title,
+                "Creating new chat session"
+            );
             state.storage.create_chat(id, &title).await.map_err(|e| {
-                tracing::error!("Create chat error: {}", e);
+                error!(chat_id = %id, error = %e, "Create chat error");
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
+            info!(chat_id = %id, "New chat session created");
             id
         }
     };
@@ -337,21 +440,23 @@ pub async fn chat(
         .add_chat_message(Uuid::new_v4(), chat_id, "user", &req.message)
         .await
         .map_err(|e| {
-            tracing::error!("Store message error: {}", e);
+            error!(chat_id = %chat_id, error = %e, "Store user message error");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
+    debug!("Running TEMPR retain on user message");
     let memories = state
         .cara
         .retain(&req.message, Some(chat_id))
         .await
         .map_err(|e| {
-            tracing::error!("Retain error: {}", e);
+            error!(chat_id = %chat_id, error = %e, "Retain error");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
+    debug!("Running CARA reflect");
     let (response, opinions) = state.cara.reflect(&req.message, 2000, Some(chat_id)).await.map_err(|e| {
-        tracing::error!("Reflect error: {}", e);
+        error!(chat_id = %chat_id, error = %e, "Reflect error");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
@@ -360,7 +465,7 @@ pub async fn chat(
         .add_chat_message(Uuid::new_v4(), chat_id, "assistant", &response)
         .await
         .map_err(|e| {
-            tracing::error!("Store message error: {}", e);
+            error!(chat_id = %chat_id, error = %e, "Store assistant message error");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
@@ -395,11 +500,13 @@ pub async fn chat(
 }
 
 /// GET /api/chats - List all chat sessions.
+#[tracing::instrument(skip(state))]
 pub async fn list_chats(
     State(state): State<ApiState>,
 ) -> Result<Json<Vec<ChatSummary>>, StatusCode> {
+    debug!("List chats request");
     let chats = state.storage.list_chats().await.map_err(|e| {
-        tracing::error!("List chats error: {}", e);
+        error!(error = %e, "List chats error");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
@@ -417,12 +524,14 @@ pub async fn list_chats(
 }
 
 /// GET /api/chats/:id - Get a chat with messages and linked memories.
+#[tracing::instrument(skip(state))]
 pub async fn get_chat(
     State(state): State<ApiState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ChatDetail>, StatusCode> {
+    debug!(chat_id = %id, "Get chat request");
     let chats = state.storage.list_chats().await.map_err(|e| {
-        tracing::error!("Get chat error: {}", e);
+        error!(chat_id = %id, error = %e, "Get chat error");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
@@ -433,7 +542,7 @@ pub async fn get_chat(
         .ok_or(StatusCode::NOT_FOUND)?;
 
     let messages = state.storage.get_chat_messages(id).await.map_err(|e| {
-        tracing::error!("Get chat messages error: {}", e);
+        error!(chat_id = %id, error = %e, "Get chat messages error");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
@@ -447,7 +556,7 @@ pub async fn get_chat(
         .collect();
 
     let memories = state.storage.get_memories_by_chat(id).await.map_err(|e| {
-        tracing::error!("Get chat memories error: {}", e);
+        error!(chat_id = %id, error = %e, "Get chat memories error");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
@@ -473,14 +582,17 @@ pub async fn get_chat(
 }
 
 /// DELETE /api/chats/:id - Delete a chat and all its associated data.
+#[tracing::instrument(skip(state))]
 pub async fn delete_chat(
     State(state): State<ApiState>,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, StatusCode> {
+    debug!(chat_id = %id, "Delete chat request");
     state.storage.delete_chat(id).await.map_err(|e| {
-        tracing::error!("Delete chat error: {}", e);
+        error!(chat_id = %id, error = %e, "Delete chat error");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
+    info!(chat_id = %id, "Chat deleted successfully");
     Ok(StatusCode::NO_CONTENT)
 }
