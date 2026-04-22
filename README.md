@@ -1,4 +1,4 @@
-# Hindsight
+# Memor/e
 
 [![Build](https://github.com/rashomon-gh/hindsight/actions/workflows/build.yml/badge.svg)](https://github.com/rashomon-gh/hindsight/actions/workflows/build.yml/badge.svg)
 
