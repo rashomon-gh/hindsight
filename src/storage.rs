@@ -187,27 +187,26 @@ impl Storage {
     ///
     /// Words shorter than 3 characters are ignored.
     pub async fn search_keyword(&self, query: &str, limit: usize) -> Result<Vec<ScoredMemory>> {
-        let tsquery: String = query
+        let filtered_query: String = query
             .split_whitespace()
             .filter(|w| w.len() > 2)
-            .map(|w| format!("{}:*", w.to_lowercase()))
             .collect::<Vec<_>>()
-            .join(" | ");
+            .join(" ");
 
-        if tsquery.is_empty() {
+        if filtered_query.is_empty() {
             return Ok(Vec::new());
         }
 
         let rows = sqlx::query(
             r#"SELECT id, network_type, content, embedding::text AS embedding_text,
                       entities, confidence, created_at, updated_at,
-                      CAST(ts_rank(to_tsvector('english', content), to_tsquery($1)) AS double precision) AS score
+                      CAST(ts_rank(to_tsvector('english', content), plainto_tsquery('english', $1)) AS double precision) AS score
                FROM memories
-               WHERE to_tsvector('english', content) @@ to_tsquery($1)
+               WHERE to_tsvector('english', content) @@ plainto_tsquery('english', $1)
                ORDER BY score DESC
                LIMIT $2"#,
         )
-        .bind(&tsquery)
+        .bind(&filtered_query)
         .bind(limit as i64)
         .fetch_all(&self.pool)
         .await?;
