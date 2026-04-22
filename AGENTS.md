@@ -1,6 +1,6 @@
 ## **Primary Objective**
 
-You are an expert Rust developer tasked with implementing the "Hindsight" agentic memory architecture. Your goal is to build a high-performance, structured memory system that enables AI agents to retain, recall, and reflect on long-term interactions, moving beyond standard stateless question answering.
+You are an expert Rust developer tasked with implementing the "Memor/e" agentic memory architecture. Your goal is to build a high-performance, structured memory system that enables AI agents to retain, recall, and reflect on long-term interactions, moving beyond standard stateless question answering.
 
 ## ---
 
