@@ -96,7 +96,7 @@ If no facts can be extracted, return: {"facts": []}"#;
 
         let response = self
             .llm
-            .chat_completion(messages, Some(0.3), Some(4096))
+            .chat_completion(messages, Some(0.3), Some(16384))
             .await?;
         let json_str = extract_json(&response);
         let extracted: ExtractedFacts = serde_json::from_str(json_str).map_err(|e| {
