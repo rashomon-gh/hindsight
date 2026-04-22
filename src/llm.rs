@@ -69,6 +69,7 @@ pub struct LLMClient {
     api_key: String,
     chat_model: String,
     embed_model: String,
+    max_tokens: u64,
 }
 
 impl LLMClient {
@@ -93,6 +94,7 @@ impl LLMClient {
             api_key: config.api_key.clone(),
             chat_model: config.chat_model.clone(),
             embed_model: config.embed_model.clone(),
+            max_tokens: config.max_tokens,
         }
     }
 
@@ -188,5 +190,10 @@ impl LLMClient {
             .into_iter()
             .next()
             .ok_or_else(|| anyhow!("No embedding returned"))
+    }
+
+    /// Returns the max_tokens limit for chat completions.
+    pub fn max_tokens(&self) -> u64 {
+        self.max_tokens
     }
 }

@@ -60,6 +60,10 @@ pub struct LLMConfig {
     pub embed_model: String,
     /// Dimensionality of the embedding vectors produced by `embed_model`.
     pub embedding_dim: usize,
+    /// Maximum tokens to allow for chat completion responses.
+    /// Important for reasoning models that use extensive chain-of-thought.
+    #[serde(default = "default_max_tokens")]
+    pub max_tokens: u64,
 }
 
 /// Web server configuration.
@@ -92,6 +96,10 @@ fn default_host() -> String {
 
 fn default_port() -> u16 {
     8080
+}
+
+fn default_max_tokens() -> u64 {
+    16384
 }
 
 impl Config {

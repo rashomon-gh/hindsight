@@ -8,6 +8,7 @@ llm:
   chat_model: "google/gemma-3-27b"
   embed_model: "nomic-ai/nomic-embed-text-v1.5-GGUF"
   embedding_dim: 768
+  max_tokens: 16384
 
 web:
   enabled: true
