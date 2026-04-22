@@ -21,6 +21,7 @@ use crate::api::models::*;
 
 /// Query parameters for memory listing endpoint.
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct MemoryQuery {
     pub limit: Option<usize>,
     pub offset: Option<usize>,
