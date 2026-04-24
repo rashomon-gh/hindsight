@@ -104,16 +104,17 @@ impl Config {
     /// # Errors
     ///
     /// Returns an error if the file is missing or cannot be parsed.
-    pub fn load() -> Result<Self> {
-        info!("Loading configuration from config.yaml");
+    pub fn load(path: Option<&str>) -> Result<Self> {
+        let config_path = path.unwrap_or("config.yaml");
+        info!("Loading configuration from {}", config_path);
         let settings = config::Config::builder()
-            .add_source(config::File::with_name("config.yaml"))
+            .add_source(config::File::with_name(config_path))
             .build()
-            .context("Failed to load config.yaml")?;
+            .context(format!("Failed to load {}", config_path))?;
 
         let config: Config = settings
             .try_deserialize()
-            .context("Failed to parse config.yaml")?;
+            .context(format!("Failed to parse {}", config_path))?;
 
         debug!(
             database_url = %config.database.url,

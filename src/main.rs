@@ -42,7 +42,10 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    let config = Config::load()?;
+    let args: Vec<String> = std::env::args().collect();
+    let config_path = args.get(1).map(|s| s.as_str());
+
+    let config = Config::load(config_path)?;
 
     tracing::info!("Connecting to database at {}...", config.database.url);
     let storage = Arc::new(Storage::connect(&config.database.url).await?);
