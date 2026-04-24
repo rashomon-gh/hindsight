@@ -234,11 +234,15 @@ function hindsightApp() {
                 const data = await response.json();
                 this.currentChatId = data.chat_id;
 
+                console.log('Chat response data:', data);
+                console.log('Operation stats:', data.operation_stats);
+
                 this.chatMessages.push({
                     role: 'assistant',
                     text: data.response,
                     memories: data.new_memories || [],
-                    opinions: data.opinions || []
+                    opinions: data.opinions || [],
+                    operationStats: data.operation_stats || null
                 });
 
                 await Promise.all([this.loadStats(), this.loadChatHistory()]);

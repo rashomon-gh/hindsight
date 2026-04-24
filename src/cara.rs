@@ -51,7 +51,7 @@ impl CaraPipeline {
     /// `token_budget` controls how many tokens of recalled context are
     /// injected into the prompt.
     #[instrument(skip(self, user_message))]
-    pub async fn reflect(&self, user_message: &str, token_budget: Option<usize>, chat_id: Option<Uuid>) -> Result<(String, Vec<MemoryUnit>)> {
+    pub async fn reflect(&self, user_message: &str, token_budget: Option<usize>, chat_id: Option<Uuid>) -> Result<CaraReflectResult> {
         let token_budget = token_budget.unwrap_or(4096);
         info!(
             message_length = user_message.len(),
@@ -59,19 +59,20 @@ impl CaraPipeline {
             chat_id = ?chat_id,
             "Starting CARA reflect operation"
         );
-        let recalled = self.tempr.recall(user_message, Some(token_budget)).await?;
+        let recall_result = self.tempr.recall(user_message, Some(token_budget)).await?;
 
         info!(
-            memories_recalled = recalled.len(),
+            memories_recalled = recall_result.memories.len(),
             "Memory recall completed"
         );
 
-        let memory_context = if recalled.is_empty() {
+        let memory_context = if recall_result.memories.is_empty() {
             debug!("No relevant memories found for context");
             "No relevant memories found.".to_string()
         } else {
-            debug!("Formatting memory context with {} recalled memories", recalled.len());
-            recalled
+            debug!("Formatting memory context with {} recalled memories", recall_result.memories.len());
+            recall_result
+                .memories
                 .iter()
                 .map(|sm| {
                     let network_tag = match sm.memory.network {
@@ -192,7 +193,19 @@ You may include multiple opinion tags. Do not mention the XML tags in your visib
             opinions_stored = stored_opinions.len(),
             "CARA reflect operation completed"
         );
-        Ok((clean_response, stored_opinions))
+        let response_length = clean_response.len();
+        let opinions_count = stored_opinions.len();
+        let memories_count = recall_result.memories.len();
+        Ok(CaraReflectResult {
+            response: clean_response,
+            opinions: stored_opinions,
+            stats: CaraReflectStats {
+                response_length,
+                opinions_extracted: opinions_count,
+                memories_recalled: memories_count,
+                tempr_stats: Some(recall_result.stats),
+            },
+        })
     }
 }
 

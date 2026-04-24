@@ -244,7 +244,7 @@ If no facts can be extracted, return: {"facts": []}"#;
     /// lists are fused with RRF, deduplicated, and trimmed to fit
     /// `token_budget` (estimated at ~4 characters per token).
     #[instrument(skip(self))]
-    pub async fn recall(&self, query: &str, token_budget: Option<usize>) -> Result<Vec<ScoredMemory>> {
+    pub async fn recall(&self, query: &str, token_budget: Option<usize>) -> Result<TemprRecallResult> {
         let token_budget = token_budget.unwrap_or(4096);
         info!(
             query = %query,
@@ -325,7 +325,17 @@ If no facts can be extracted, return: {"facts": []}"#;
             tokens_used = tokens_used,
             "TEMPR recall operation completed"
         );
-        Ok(results)
+        let total_results = results.len();
+        Ok(TemprRecallResult {
+            memories: results,
+            stats: TemprRecallStats {
+                semantic_results: semantic.len(),
+                keyword_results: keyword.len(),
+                temporal_results: temporal.len(),
+                total_results,
+                tokens_used,
+            },
+        })
     }
 
     /// Spreading-activation graph traversal starting from `seed_ids`.

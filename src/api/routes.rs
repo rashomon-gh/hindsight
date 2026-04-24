@@ -455,14 +455,14 @@ pub async fn chat(
         })?;
 
     debug!("Running CARA reflect");
-    let (response, opinions) = state.cara.reflect(&req.message, None, Some(chat_id)).await.map_err(|e| {
+    let reflect_result = state.cara.reflect(&req.message, None, Some(chat_id)).await.map_err(|e| {
         error!(chat_id = %chat_id, error = %e, "Reflect error");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
     state
         .storage
-        .add_chat_message(Uuid::new_v4(), chat_id, "assistant", &response)
+        .add_chat_message(Uuid::new_v4(), chat_id, "assistant", &reflect_result.response)
         .await
         .map_err(|e| {
             error!(chat_id = %chat_id, error = %e, "Store assistant message error");
@@ -480,7 +480,7 @@ pub async fn chat(
         })
         .collect();
 
-    let chat_opinions: Vec<ChatMemory> = opinions
+    let chat_opinions: Vec<ChatMemory> = reflect_result.opinions
         .into_iter()
         .map(|m| ChatMemory {
             id: m.id,
@@ -491,11 +491,27 @@ pub async fn chat(
         })
         .collect();
 
+    let operation_stats = OperationStats {
+        tempr: reflect_result.stats.tempr_stats.map(|ts| crate::api::models::TemprStats {
+            semantic_results: ts.semantic_results,
+            keyword_results: ts.keyword_results,
+            temporal_results: ts.temporal_results,
+            total_results: ts.total_results,
+            tokens_used: ts.tokens_used,
+        }),
+        cara: Some(crate::api::models::CaraStats {
+            response_length: reflect_result.stats.response_length,
+            opinions_extracted: reflect_result.stats.opinions_extracted,
+            chat_completion_tokens: None, // We don't track this separately currently
+        }),
+    };
+
     Ok(Json(ChatResponse {
         chat_id,
-        response,
+        response: reflect_result.response,
         new_memories,
         opinions: chat_opinions,
+        operation_stats: Some(operation_stats),
     }))
 }
 

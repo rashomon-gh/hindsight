@@ -136,6 +136,7 @@ pub struct ChatResponse {
     pub response: String,
     pub new_memories: Vec<ChatMemory>,
     pub opinions: Vec<ChatMemory>,
+    pub operation_stats: Option<OperationStats>,
 }
 
 /// A memory created during a chat interaction, for display in the UI.
@@ -174,4 +175,29 @@ pub struct ChatMessageEntry {
     pub role: String,
     pub content: String,
     pub created_at: DateTime<Utc>,
+}
+
+/// Operation statistics from TEMPR recall.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TemprStats {
+    pub semantic_results: usize,
+    pub keyword_results: usize,
+    pub temporal_results: usize,
+    pub total_results: usize,
+    pub tokens_used: usize,
+}
+
+/// Operation statistics from CARA reflect.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CaraStats {
+    pub response_length: usize,
+    pub opinions_extracted: usize,
+    pub chat_completion_tokens: Option<usize>,
+}
+
+/// Complete operation statistics for a chat response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OperationStats {
+    pub tempr: Option<TemprStats>,
+    pub cara: Option<CaraStats>,
 }

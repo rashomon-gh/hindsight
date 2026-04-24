@@ -191,3 +191,51 @@ pub struct ScoredMemory {
     /// Relevance or fusion score (higher is more relevant).
     pub score: f64,
 }
+
+/// Result of a TEMPR recall operation including memories and statistics.
+#[derive(Debug, Clone)]
+pub struct TemprRecallResult {
+    /// The recalled memories with relevance scores.
+    pub memories: Vec<ScoredMemory>,
+    /// Statistics from the recall operation.
+    pub stats: TemprRecallStats,
+}
+
+/// Statistics collected during a TEMPR recall operation.
+#[derive(Debug, Clone)]
+pub struct TemprRecallStats {
+    /// Number of results from semantic search.
+    pub semantic_results: usize,
+    /// Number of results from keyword search.
+    pub keyword_results: usize,
+    /// Number of results from temporal search.
+    pub temporal_results: usize,
+    /// Total number of results returned.
+    pub total_results: usize,
+    /// Total estimated tokens used.
+    pub tokens_used: usize,
+}
+
+/// Result of a CARA reflect operation including response, opinions, and statistics.
+#[derive(Debug, Clone)]
+pub struct CaraReflectResult {
+    /// The generated response text.
+    pub response: String,
+    /// New opinion memories that were created.
+    pub opinions: Vec<MemoryUnit>,
+    /// Statistics from the reflect operation.
+    pub stats: CaraReflectStats,
+}
+
+/// Statistics collected during a CARA reflect operation.
+#[derive(Debug, Clone)]
+pub struct CaraReflectStats {
+    /// Length of the generated response in characters.
+    pub response_length: usize,
+    /// Number of opinions extracted and stored.
+    pub opinions_extracted: usize,
+    /// Number of memories recalled during the operation.
+    pub memories_recalled: usize,
+    /// TEMPR recall statistics if recall was performed.
+    pub tempr_stats: Option<TemprRecallStats>,
+}
