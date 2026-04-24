@@ -284,7 +284,8 @@ function hindsightApp() {
                     role: m.role,
                     text: m.content,
                     memories: [],
-                    opinions: []
+                    opinions: [],
+                    operationStats: m.operation_stats || null
                 }));
 
                 if (data.memories && data.memories.length > 0) {

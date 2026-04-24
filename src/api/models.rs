@@ -175,6 +175,8 @@ pub struct ChatMessageEntry {
     pub role: String,
     pub content: String,
     pub created_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operation_stats: Option<OperationStats>,
 }
 
 /// Operation statistics from TEMPR recall.

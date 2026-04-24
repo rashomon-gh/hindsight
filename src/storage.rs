@@ -51,7 +51,8 @@ impl Storage {
                 chat_id UUID NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
                 role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
                 content TEXT NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                operation_stats JSONB
             )",
             "CREATE INDEX IF NOT EXISTS idx_chat_messages_chat ON chat_messages(chat_id)",
             "CREATE TABLE IF NOT EXISTS memories (
@@ -90,6 +91,13 @@ impl Storage {
 
         let _ = sqlx::query(
             "ALTER TABLE memories ADD COLUMN IF NOT EXISTS source_chat_id UUID REFERENCES chats(id) ON DELETE CASCADE",
+        )
+        .execute(&self.pool)
+        .await;
+
+        // Add operation_stats column to chat_messages if it doesn't exist
+        let _ = sqlx::query(
+            "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS operation_stats JSONB",
         )
         .execute(&self.pool)
         .await?;
@@ -693,21 +701,23 @@ impl Storage {
         Ok(())
     }
 
-    pub async fn add_chat_message(&self, id: Uuid, chat_id: Uuid, role: &str, content: &str) -> Result<()> {
+    pub async fn add_chat_message(&self, id: Uuid, chat_id: Uuid, role: &str, content: &str, operation_stats: Option<serde_json::Value>) -> Result<()> {
         debug!(
             message_id = %id,
             chat_id = %chat_id,
             role = %role,
             content_length = content.len(),
+            has_operation_stats = operation_stats.is_some(),
             "Adding message to chat"
         );
         sqlx::query(
-            "INSERT INTO chat_messages (id, chat_id, role, content, created_at) VALUES ($1, $2, $3, $4, NOW())",
+            "INSERT INTO chat_messages (id, chat_id, role, content, created_at, operation_stats) VALUES ($1, $2, $3, $4, NOW(), $5)",
         )
         .bind(id)
         .bind(chat_id)
         .bind(role)
         .bind(content)
+        .bind(operation_stats)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -735,10 +745,10 @@ impl Storage {
 
     /// Gets all messages for a specific chat.
     #[instrument(skip(self))]
-    pub async fn get_chat_messages(&self, chat_id: Uuid) -> Result<Vec<(Uuid, String, String, DateTime<Utc>)>> {
+    pub async fn get_chat_messages(&self, chat_id: Uuid) -> Result<Vec<(Uuid, String, String, DateTime<Utc>, Option<serde_json::Value>)>> {
         debug!(chat_id = %chat_id, "Retrieving chat messages");
         let rows = sqlx::query(
-            "SELECT id, role, content, created_at FROM chat_messages WHERE chat_id = $1 ORDER BY created_at ASC",
+            "SELECT id, role, content, created_at, operation_stats FROM chat_messages WHERE chat_id = $1 ORDER BY created_at ASC",
         )
         .bind(chat_id)
         .fetch_all(&self.pool)
@@ -750,7 +760,8 @@ impl Storage {
             let role: String = row.get("role");
             let content: String = row.get("content");
             let created_at: DateTime<Utc> = row.get("created_at");
-            results.push((id, role, content, created_at));
+            let operation_stats: Option<serde_json::Value> = row.get("operation_stats");
+            results.push((id, role, content, created_at, operation_stats));
         }
         debug!(
             chat_id = %chat_id,

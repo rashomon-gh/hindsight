@@ -437,7 +437,7 @@ pub async fn chat(
 
     state
         .storage
-        .add_chat_message(Uuid::new_v4(), chat_id, "user", &req.message)
+        .add_chat_message(Uuid::new_v4(), chat_id, "user", &req.message, None)
         .await
         .map_err(|e| {
             error!(chat_id = %chat_id, error = %e, "Store user message error");
@@ -459,15 +459,6 @@ pub async fn chat(
         error!(chat_id = %chat_id, error = %e, "Reflect error");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
-
-    state
-        .storage
-        .add_chat_message(Uuid::new_v4(), chat_id, "assistant", &reflect_result.response)
-        .await
-        .map_err(|e| {
-            error!(chat_id = %chat_id, error = %e, "Store assistant message error");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
 
     let new_memories: Vec<ChatMemory> = memories
         .into_iter()
@@ -505,6 +496,18 @@ pub async fn chat(
             chat_completion_tokens: None, // We don't track this separately currently
         }),
     };
+
+    // Serialize operation stats to JSON for storage
+    let operation_stats_json = serde_json::to_value(&operation_stats).ok();
+
+    state
+        .storage
+        .add_chat_message(Uuid::new_v4(), chat_id, "assistant", &reflect_result.response, operation_stats_json)
+        .await
+        .map_err(|e| {
+            error!(chat_id = %chat_id, error = %e, "Store assistant message error");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     Ok(Json(ChatResponse {
         chat_id,
@@ -564,10 +567,15 @@ pub async fn get_chat(
 
     let chat_messages: Vec<ChatMessageEntry> = messages
         .into_iter()
-        .map(|(_, role, content, created_at)| ChatMessageEntry {
-            role,
-            content,
-            created_at,
+        .map(|(_, role, content, created_at, operation_stats_json)| {
+            let operation_stats = operation_stats_json
+                .and_then(|v| serde_json::from_value(v).ok());
+            ChatMessageEntry {
+                role,
+                content,
+                created_at,
+                operation_stats,
+            }
         })
         .collect();
 
