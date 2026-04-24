@@ -244,7 +244,8 @@ If no facts can be extracted, return: {"facts": []}"#;
     /// lists are fused with RRF, deduplicated, and trimmed to fit
     /// `token_budget` (estimated at ~4 characters per token).
     #[instrument(skip(self))]
-    pub async fn recall(&self, query: &str, token_budget: usize) -> Result<Vec<ScoredMemory>> {
+    pub async fn recall(&self, query: &str, token_budget: Option<usize>) -> Result<Vec<ScoredMemory>> {
+        let token_budget = token_budget.unwrap_or(4096);
         info!(
             query = %query,
             token_budget = token_budget,

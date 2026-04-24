@@ -51,14 +51,15 @@ impl CaraPipeline {
     /// `token_budget` controls how many tokens of recalled context are
     /// injected into the prompt.
     #[instrument(skip(self, user_message))]
-    pub async fn reflect(&self, user_message: &str, token_budget: usize, chat_id: Option<Uuid>) -> Result<(String, Vec<MemoryUnit>)> {
+    pub async fn reflect(&self, user_message: &str, token_budget: Option<usize>, chat_id: Option<Uuid>) -> Result<(String, Vec<MemoryUnit>)> {
+        let token_budget = token_budget.unwrap_or(4096);
         info!(
             message_length = user_message.len(),
             token_budget = token_budget,
             chat_id = ?chat_id,
             "Starting CARA reflect operation"
         );
-        let recalled = self.tempr.recall(user_message, token_budget).await?;
+        let recalled = self.tempr.recall(user_message, Some(token_budget)).await?;
 
         info!(
             memories_recalled = recalled.len(),
@@ -132,7 +133,7 @@ You may include multiple opinion tags. Do not mention the XML tags in your visib
         let response = self
             .tempr
             .llm()
-            .chat_completion(messages, Some(0.7), Some(2048))
+            .chat_completion(messages, Some(0.1), Some(2048))
             .await?;
 
         debug!("Extracting opinions from LLM response");

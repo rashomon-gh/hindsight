@@ -455,7 +455,7 @@ pub async fn chat(
         })?;
 
     debug!("Running CARA reflect");
-    let (response, opinions) = state.cara.reflect(&req.message, 2000, Some(chat_id)).await.map_err(|e| {
+    let (response, opinions) = state.cara.reflect(&req.message, None, Some(chat_id)).await.map_err(|e| {
         error!(chat_id = %chat_id, error = %e, "Reflect error");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
