@@ -2,7 +2,7 @@ database:
   url: "postgres://hindsight:hindsight@localhost:5432/hindsight"
 
 llm:
-  base_url: "http://deepseek-v4-flash-runai-gellms.inference.spike.tue.nl"
+  base_url: "https://deepseek-v4-flash-runai-gellms.inference.spike.tue.nl"
   embed_base_url: "http://localhost:1234"
   api_key: "Bearer token"
   chat_model: "deepseek-ai/DeepSeek-V4-Flash"

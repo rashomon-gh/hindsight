@@ -2,7 +2,7 @@ database:
   url: "postgres://hindsight:hindsight@localhost:5432/hindsight"
 
 llm:
-  base_url: "http://qwen3-5-397b-a17b-nvfp4-runai-gellms.inference.spike.tue.nl"
+  base_url: "https://qwen3-5-397b-a17b-nvfp4-runai-gellms.inference.spike.tue.nl"
   embed_base_url: "http://localhost:1234"
   api_key: "Bearer token"
   chat_model: "qwen/qwen3-5-397b-a17b-nvfp4"

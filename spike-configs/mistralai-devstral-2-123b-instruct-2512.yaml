@@ -2,7 +2,7 @@ database:
   url: "postgres://hindsight:hindsight@localhost:5432/hindsight"
 
 llm:
-  base_url: "http://mistralai-devstral-2-123b-instruct-2512-runai-gellms.inferenc\
+  base_url: "https://mistralai-devstral-2-123b-instruct-2512-runai-gellms.inferenc\
     e.spike.tue.nl"
   embed_base_url: "http://localhost:1234"
   api_key: "Bearer token"
